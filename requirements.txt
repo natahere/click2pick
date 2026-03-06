@@ -1,4 +1,3 @@
 anthropic
 pymupdf
 Pillow
-streamlit-drawable-canvas
