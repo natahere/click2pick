@@ -15,14 +15,13 @@ html,body,[class*="css"]{font-family:'Lato',sans-serif!important}
 .stApp{background:#0c0c0f;color:#e2dfd8}
 .app-title{font-family:'Syne',sans-serif;font-size:26px;font-weight:800;color:#fff;letter-spacing:-.5px}
 .app-title span{color:#F59E0B}
-.app-sub{font-size:12px;color:#6b6b78;margin-top:3px}
 .panel-label{font-family:'JetBrains Mono',monospace;font-size:10px;color:#6b6b78;
     letter-spacing:2px;text-transform:uppercase;margin-bottom:8px}
 .infobox{background:#13130f;border-left:3px solid #F59E0B;border-radius:6px;
     padding:9px 13px;font-size:12px;color:#a89060;margin-bottom:10px}
 .step-badge{display:inline-block;background:#F59E0B;color:#0c0c0f;border-radius:50%;
     width:22px;height:22px;text-align:center;line-height:22px;font-weight:800;
-    font-size:12px;margin-right:6px;font-family:'Syne',sans-serif}
+    font-size:12px;margin-right:6px}
 .stButton>button{background:#F59E0B!important;color:#0c0c0f!important;border:none!important;
     border-radius:8px!important;font-weight:700!important}
 .stButton>button:hover{background:#d97706!important}
@@ -93,45 +92,38 @@ def auto_extract(img: Image.Image, fields: list, pdf_text: str = "") -> dict:
         return result
     return {f: smart_match(text, f) for f in fields}
 
-def render_image(img: Image.Image, boxes: list,
-                 pt1=None, pt2=None, disp_w=700) -> Image.Image:
-    """Render image with completed boxes + current in-progress selection."""
-    iw, ih  = img.size
-    scale   = disp_w / iw
-    disp_h  = int(ih * scale)
-    display = img.resize((disp_w, disp_h), Image.LANCZOS).copy()
-    draw    = ImageDraw.Draw(display, "RGBA")
+DISP_W = 700
 
-    # Completed extractions in green
+def make_display(img: Image.Image, boxes, pt1, pt2) -> Image.Image:
+    iw, ih  = img.size
+    disp_h  = int(ih * DISP_W / iw)
+    out     = img.resize((DISP_W, disp_h), Image.LANCZOS).copy()
+    draw    = ImageDraw.Draw(out, "RGBA")
+    scale   = DISP_W / iw
+
+    # Completed boxes in green
     for b in boxes:
-        bx1 = int(b["x1"] * scale); by1 = int(b["y1"] * scale)
-        bx2 = int(b["x2"] * scale); by2 = int(b["y2"] * scale)
-        draw.rectangle([bx1,by1,bx2,by2], outline="#34d399", width=2,
-                       fill=(52,211,153,30))
+        draw.rectangle([int(b["x1"]*scale), int(b["y1"]*scale),
+                        int(b["x2"]*scale), int(b["y2"]*scale)],
+                       outline="#34d399", width=2, fill=(52,211,153,30))
 
     # Point 1 marker
     if pt1:
-        px, py = int(pt1[0] * scale), int(pt1[1] * scale)
-        r = 7
-        draw.ellipse([px-r, py-r, px+r, py+r], fill="#F59E0B", outline="#fff", width=2)
-        draw.text((px+10, py-8), "1", fill="#F59E0B")
+        px, py = int(pt1[0]*scale), int(pt1[1]*scale)
+        draw.ellipse([px-8,py-8,px+8,py+8], fill="#F59E0B", outline="#fff", width=2)
+        draw.text((px+12, py-8), "1", fill="#F59E0B")
 
-    # In-progress selection rectangle
+    # Current selection box
     if pt1 and pt2:
-        rx1 = int(min(pt1[0], pt2[0]) * scale)
-        ry1 = int(min(pt1[1], pt2[1]) * scale)
-        rx2 = int(max(pt1[0], pt2[0]) * scale)
-        ry2 = int(max(pt1[1], pt2[1]) * scale)
+        rx1 = int(min(pt1[0],pt2[0])*scale); ry1 = int(min(pt1[1],pt2[1])*scale)
+        rx2 = int(max(pt1[0],pt2[0])*scale); ry2 = int(max(pt1[1],pt2[1])*scale)
         draw.rectangle([rx1,ry1,rx2,ry2], outline="#F59E0B", width=3,
                        fill=(245,158,11,45))
-        draw.ellipse([int(pt2[0]*scale)-7, int(pt2[1]*scale)-7,
-                      int(pt2[0]*scale)+7, int(pt2[1]*scale)+7],
-                     fill="#F59E0B", outline="#fff", width=2)
-        draw.text((int(pt2[0]*scale)+10, int(pt2[1]*scale)-8), "2", fill="#F59E0B")
+        px2, py2 = int(pt2[0]*scale), int(pt2[1]*scale)
+        draw.ellipse([px2-8,py2-8,px2+8,py2+8], fill="#F59E0B", outline="#fff", width=2)
+        draw.text((px2+12, py2-8), "2", fill="#F59E0B")
+    return out
 
-    return display
-
-# ── Presets ───────────────────────────────────────────────────────────────────
 PRESETS = {
     "📄 Invoice":       ["Vendor Name","Invoice Number","Invoice Date","Due Date",
                          "Subtotal","Tax Amount","Total Amount","Payment Terms","PO Number"],
@@ -145,13 +137,14 @@ PRESETS = {
     "✏️ Custom":        [],
 }
 
-DISP_W = 700   # display width in pixels
-
 # ── Session state ─────────────────────────────────────────────────────────────
-DEFAULTS = dict(pages=[], pdf_texts=[], extracted={}, boxes=[],
-                page_idx=0, active_field=None,
-                fields=list(PRESETS["📄 Invoice"]),
-                pt1=None, pt2=None)
+DEFAULTS = dict(
+    pages=[], pdf_texts=[], extracted={}, boxes=[],
+    page_idx=0, active_field=None,
+    fields=list(PRESETS["📄 Invoice"]),
+    pt1=None, pt2=None,
+    last_click=None,   # ← THE FIX: track last processed click to avoid double-firing
+)
 for k, v in DEFAULTS.items():
     if k not in st.session_state:
         st.session_state[k] = v
@@ -160,10 +153,9 @@ for k, v in DEFAULTS.items():
 st.markdown("""
 <div style="padding:20px 0 14px;border-bottom:1px solid #26262d;margin-bottom:20px">
   <div class="app-title">Doc<span>Extract</span></div>
-  <div class="app-sub">Upload · Click two corners on the image · Extract with OCR</div>
+  <div style="font-size:12px;color:#6b6b78;margin-top:3px">
+    Upload · Click top-left then bottom-right · Extract with OCR</div>
 </div>""", unsafe_allow_html=True)
-st.markdown('<span style="font-family:monospace;font-size:11px;color:#34d399">● TESSERACT active</span>',
-            unsafe_allow_html=True)
 
 left, right = st.columns([1, 1.9], gap="large")
 
@@ -195,7 +187,7 @@ with left:
 
     if st.session_state.pages:
         if st.button("⚡ Auto-Extract All", use_container_width=True):
-            with st.spinner("Running OCR on full page…"):
+            with st.spinner("Running OCR…"):
                 try:
                     idx      = st.session_state.page_idx
                     pdf_text = st.session_state.pdf_texts[idx] if st.session_state.pdf_texts else ""
@@ -209,10 +201,12 @@ with left:
 
     st.markdown("<hr>", unsafe_allow_html=True)
     st.markdown('<div class="panel-label">📊 Extracted Data</div>', unsafe_allow_html=True)
+
     for field in st.session_state.fields:
-        val     = st.session_state.extracted.get(field, "")
-        is_act  = field == st.session_state.active_field
-        label   = f"**→ {field}**" if is_act else field
+        val    = st.session_state.extracted.get(field, "")
+        is_act = field == st.session_state.active_field
+        label  = f"**→ {field}**" if is_act else field
+        # Use value= so widget always reflects session state
         new_val = st.text_input(label, value=val, key=f"inp_{field}",
                                  placeholder="not extracted yet")
         if new_val != val:
@@ -230,10 +224,11 @@ with left:
         st.download_button("⬇ CSV", csv_str, "extracted.csv", "text/csv", use_container_width=True)
 
     if st.button("🗑 Clear All", use_container_width=True):
-        st.session_state.extracted = {}
-        st.session_state.boxes     = []
-        st.session_state.pt1       = None
-        st.session_state.pt2       = None
+        st.session_state.extracted  = {}
+        st.session_state.boxes      = []
+        st.session_state.pt1        = None
+        st.session_state.pt2        = None
+        st.session_state.last_click = None
         st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -257,10 +252,11 @@ with right:
         else:
             st.session_state.pages     = [Image.open(io.BytesIO(data)).convert("RGB")]
             st.session_state.pdf_texts = []
-        st.session_state.page_idx = 0
-        st.session_state.boxes    = []
-        st.session_state.pt1      = None
-        st.session_state.pt2      = None
+        st.session_state.page_idx   = 0
+        st.session_state.boxes      = []
+        st.session_state.pt1        = None
+        st.session_state.pt2        = None
+        st.session_state.last_click = None
 
     if not st.session_state.pages:
         st.markdown("""<div style="border:2px dashed #26262d;border-radius:12px;
@@ -276,10 +272,11 @@ with right:
         c1, c2, c3 = st.columns([1,2,1])
         with c1:
             if st.button("◀ Prev") and st.session_state.page_idx > 0:
-                st.session_state.page_idx -= 1
-                st.session_state.boxes    = []
-                st.session_state.pt1      = None
-                st.session_state.pt2      = None
+                st.session_state.page_idx  -= 1
+                st.session_state.boxes      = []
+                st.session_state.pt1        = None
+                st.session_state.pt2        = None
+                st.session_state.last_click = None
                 st.rerun()
         with c2:
             st.markdown(f'<div style="text-align:center;color:#6b6b78;font-size:12px;'
@@ -288,66 +285,74 @@ with right:
                         unsafe_allow_html=True)
         with c3:
             if st.button("Next ▶") and st.session_state.page_idx < n-1:
-                st.session_state.page_idx += 1
-                st.session_state.boxes    = []
-                st.session_state.pt1      = None
-                st.session_state.pt2      = None
+                st.session_state.page_idx  += 1
+                st.session_state.boxes      = []
+                st.session_state.pt1        = None
+                st.session_state.pt2        = None
+                st.session_state.last_click = None
                 st.rerun()
 
     page_img = st.session_state.pages[st.session_state.page_idx]
     iw, ih   = page_img.size
-    pt1      = st.session_state.pt1
-    pt2      = st.session_state.pt2
+    scale_to_orig = iw / DISP_W   # display → original coords
 
-    # ── Instruction bar ───────────────────────────────────────────────────────
+    pt1 = st.session_state.pt1
+    pt2 = st.session_state.pt2
+
+    # ── Instruction ───────────────────────────────────────────────────────────
     if not st.session_state.active_field:
         st.markdown('<div class="infobox">👈 Select a <strong>Target Field</strong> on the left first.</div>',
                     unsafe_allow_html=True)
     elif pt1 is None:
         st.markdown(f'<div class="infobox">'
-                    f'<span class="step-badge">1</span>'
-                    f'Click the <strong>top-left corner</strong> of the text region for '
+                    f'<span class="step-badge">1</span> Click the '
+                    f'<strong>top-left corner</strong> of the text for '
                     f'<strong>{st.session_state.active_field}</strong></div>',
                     unsafe_allow_html=True)
     elif pt2 is None:
         st.markdown(f'<div class="infobox">'
-                    f'<span class="step-badge">2</span>'
-                    f'Now click the <strong>bottom-right corner</strong> of the region for '
+                    f'<span class="step-badge">2</span> Now click the '
+                    f'<strong>bottom-right corner</strong> of the text for '
                     f'<strong>{st.session_state.active_field}</strong></div>',
                     unsafe_allow_html=True)
     else:
-        st.markdown('<div class="infobox">✅ Region selected — click '
-                    '<strong>Extract</strong> below, or click the image to re-select.</div>',
+        st.markdown('<div class="infobox">✅ Region selected — see preview below and click '
+                    '<strong>Extract</strong>. Click image again to re-select.</div>',
                     unsafe_allow_html=True)
 
-    # ── Render image with annotations ─────────────────────────────────────────
-    display_img = render_image(page_img, st.session_state.boxes, pt1, pt2, DISP_W)
+    # ── Image with click capture ──────────────────────────────────────────────
+    display_img = make_display(page_img, st.session_state.boxes, pt1, pt2)
 
-    # streamlit_image_coordinates returns {x, y} in DISPLAY pixel coords on click
-    coords = streamlit_image_coordinates(display_img, key=f"img_{st.session_state.page_idx}")
+    coords = streamlit_image_coordinates(
+        display_img,
+        key=f"img_{st.session_state.page_idx}"
+    )
 
-    # ── Handle click ──────────────────────────────────────────────────────────
+    # ── THE FIX: only process a click if it differs from the last one we handled
     if coords is not None:
-        # Convert display coords → original image coords
-        scale = iw / DISP_W
-        orig_x = int(coords["x"] * scale)
-        orig_y = int(coords["y"] * scale)
+        click_sig = (coords["x"], coords["y"])          # unique signature of this click
 
-        if pt1 is None:
-            # First click — set top-left
-            st.session_state.pt1 = (orig_x, orig_y)
-            st.rerun()
-        elif pt2 is None:
-            # Second click — set bottom-right
-            st.session_state.pt2 = (orig_x, orig_y)
-            st.rerun()
-        else:
-            # Third click — start over with new point 1
-            st.session_state.pt1 = (orig_x, orig_y)
-            st.session_state.pt2 = None
-            st.rerun()
+        if click_sig != st.session_state.last_click:    # NEW click — process it
+            st.session_state.last_click = click_sig
 
-    # ── Crop preview + Extract button ─────────────────────────────────────────
+            # Convert display coords → original image coords
+            orig_x = int(coords["x"] * scale_to_orig)
+            orig_y = int(coords["y"] * scale_to_orig)
+
+            if pt1 is None:
+                st.session_state.pt1 = (orig_x, orig_y)
+                st.rerun()
+            elif pt2 is None:
+                st.session_state.pt2 = (orig_x, orig_y)
+                st.rerun()
+            else:
+                # Both set — next click starts fresh selection
+                st.session_state.pt1 = (orig_x, orig_y)
+                st.session_state.pt2 = None
+                st.rerun()
+        # else: same coords as last rerun → ignore (component re-reporting old click)
+
+    # ── Crop preview + Extract ────────────────────────────────────────────────
     if pt1 and pt2:
         x1 = max(0,  min(pt1[0], pt2[0]) - 6)
         y1 = max(0,  min(pt1[1], pt2[1]) - 6)
@@ -357,10 +362,9 @@ with right:
         if x2 - x1 > 8 and y2 - y1 > 8:
             crop = page_img.crop((x1, y1, x2, y2))
 
-            st.markdown('<div class="panel-label" style="margin-top:10px">🔎 Crop Preview</div>',
+            st.markdown('<div class="panel-label" style="margin-top:12px">🔎 Crop Preview</div>',
                         unsafe_allow_html=True)
-            preview_w = min(crop.width * 2, DISP_W)
-            st.image(crop, width=preview_w)
+            st.image(crop, width=min(crop.width * 2, DISP_W))
 
             btn_col, reset_col = st.columns([3, 1])
             with btn_col:
@@ -371,24 +375,31 @@ with right:
                         try:
                             text = run_ocr(crop)
                             if not text:
-                                st.warning("No text detected — try selecting a wider region.")
+                                st.warning("No text detected — try a wider selection.")
                             else:
-                                st.success(f"✅ `{text[:120]}{'…' if len(text)>120 else ''}`")
                                 if st.session_state.active_field:
+                                    # Write to extracted dict
                                     st.session_state.extracted[st.session_state.active_field] = text
-                                    st.session_state.boxes.append({"x1":x1,"y1":y1,"x2":x2,"y2":y2})
+                                    st.session_state.boxes.append(
+                                        {"x1":x1,"y1":y1,"x2":x2,"y2":y2})
+                                    # Advance to next field
                                     fields = st.session_state.fields
                                     if st.session_state.active_field in fields:
                                         idx = fields.index(st.session_state.active_field)
                                         if idx + 1 < len(fields):
                                             st.session_state.active_field = fields[idx+1]
-                                    st.session_state.pt1 = None
-                                    st.session_state.pt2 = None
+                                    # Reset selection for next field
+                                    st.session_state.pt1        = None
+                                    st.session_state.pt2        = None
+                                    st.session_state.last_click = None
                                     st.rerun()
+                                else:
+                                    st.success(f"✅ `{text}`")
                         except Exception as e:
                             st.error(f"OCR error: {e}")
             with reset_col:
                 if st.button("↺ Reset", use_container_width=True):
-                    st.session_state.pt1 = None
-                    st.session_state.pt2 = None
+                    st.session_state.pt1        = None
+                    st.session_state.pt2        = None
+                    st.session_state.last_click = None
                     st.rerun()
