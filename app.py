@@ -276,7 +276,7 @@ with right:
     scaleX   = iw / DISP_W
     scaleY   = ih / disp_h
 
-    # Instruction
+    # Instruction + Extract button ABOVE the canvas
     sel = st.session_state.sel
     if not st.session_state.active_field:
         st.markdown('<div class="infobox">👈 Select a <strong>Target Field</strong> on the left first.</div>',
@@ -287,9 +287,59 @@ with right:
                     f'<strong>{st.session_state.active_field}</strong></div>',
                     unsafe_allow_html=True)
     else:
+        # Show extract button ABOVE canvas so it's always visible
         st.markdown(f'<div class="infobox">✅ Region selected — '
-                    f'click <strong>Extract</strong> below, or drag again to re-select.</div>',
+                    f'click <strong>Extract</strong> or drag again to re-select.</div>',
                     unsafe_allow_html=True)
+        # Show crop preview
+        pad  = 6
+        _prev_crop = page_img.crop((max(0, sel["x1"]-pad), max(0, sel["y1"]-pad),
+                               min(iw, sel["x2"]+pad), min(ih, sel["y2"]+pad)))
+        st.markdown('<div class="panel-label">🔎 Selected Region</div>', unsafe_allow_html=True)
+        st.image(_prev_crop, width=min(_prev_crop.width * 2, DISP_W))
+
+        btn_col, reset_col = st.columns([3, 1])
+        with btn_col:
+            lbl = (f"🔍 Extract → \"{st.session_state.active_field}\""
+                   if st.session_state.active_field else "🔍 Extract Text")
+            if st.button(lbl, use_container_width=True, type="primary", key="extract_top"):
+                _do_extract = True
+            else:
+                _do_extract = False
+        with reset_col:
+            if st.button("↺ Reset", use_container_width=True, key="reset_top"):
+                st.session_state.sel = None
+                st.rerun()
+        if _do_extract:
+            pad  = 6
+            crop = page_img.crop((max(0, sel["x1"]-pad), max(0, sel["y1"]-pad),
+                                   min(iw, sel["x2"]+pad), min(ih, sel["y2"]+pad)))
+            st.markdown('<div class="panel-label">🔎 Region Preview</div>', unsafe_allow_html=True)
+            st.image(crop, width=min(crop.width * 2, DISP_W))
+            with st.spinner("Running OCR…"):
+                try:
+                    text = run_ocr(crop)
+                    if not text:
+                        st.warning("No text detected — try a wider selection.")
+                    else:
+                        if st.session_state.active_field:
+                            field = st.session_state.active_field
+                            st.session_state.extracted[field] = text
+                            st.session_state.boxes.append({
+                                "x1":sel["x1"],"y1":sel["y1"],
+                                "x2":sel["x2"],"y2":sel["y2"],
+                            })
+                            fields = st.session_state.fields
+                            if field in fields:
+                                idx = fields.index(field)
+                                if idx+1 < len(fields):
+                                    st.session_state.active_field = fields[idx+1]
+                            st.session_state.sel = None
+                            st.rerun()
+                        else:
+                            st.success(f"✅ `{text}`")
+                except Exception as e:
+                    st.error(f"OCR error: {e}")
 
     # ── Canvas rendered via components.html ───────────────────────────────────
     # Boxes in display coords for drawing
@@ -356,7 +406,10 @@ function redraw(rx, ry, rw, rh) {{
 function getPos(e) {{
   const r = canvas.getBoundingClientRect();
   const s = e.touches ? e.touches[0] : e;
-  return [s.clientX - r.left, s.clientY - r.top];
+  const cssX = s.clientX - r.left;
+  const cssY = s.clientY - r.top;
+  // Correct for iframe scaling: canvas.width may != rendered CSS width
+  return [cssX * canvas.width / r.width, cssY * canvas.height / r.height];
 }}
 
 function finish(ex, ey) {{
@@ -366,12 +419,13 @@ function finish(ex, ey) {{
   const x2 = Math.round(Math.max(sx,ex) * SX);
   const y2 = Math.round(Math.max(sy,ey) * SY);
   redraw(Math.min(sx,ex), Math.min(sy,ey), Math.abs(ex-sx), Math.abs(ey-sy));
-  if (Math.abs(x2-x1) > 5 && Math.abs(y2-y1) > 5) {{
+  if (Math.abs(ex-sx) > 4 && Math.abs(ey-sy) > 4) {{
     msg.textContent = '✓ Region selected — click Extract below';
     // Submit form to parent page URL with ?sel= param
     // This navigates the TOP frame, which Streamlit intercepts
     selInp.value = x1+','+y1+','+x2+','+y2;
-    form.action  = window.parent.location.href.split('?')[0];
+    let baseUrl = window.parent.location.origin + window.parent.location.pathname;
+    form.action = baseUrl;
     form.target  = '_parent';
     form.submit();
   }} else {{
@@ -410,46 +464,4 @@ canvas.addEventListener('touchend', e=>{{
     import streamlit.components.v1 as components
     components.html(canvas_html, height=disp_h + 30, scrolling=False)
 
-    # ── Crop preview + Extract ─────────────────────────────────────────────────
-    if sel and sel["x2"]-sel["x1"] > 8 and sel["y2"]-sel["y1"] > 8:
-        pad  = 6
-        crop = page_img.crop((max(0, sel["x1"]-pad), max(0, sel["y1"]-pad),
-                               min(iw, sel["x2"]+pad), min(ih, sel["y2"]+pad)))
-
-        st.markdown('<div class="panel-label" style="margin-top:10px">🔎 Crop Preview</div>',
-                    unsafe_allow_html=True)
-        st.image(crop, width=min(crop.width * 2, DISP_W))
-
-        btn_col, reset_col = st.columns([3, 1])
-        with btn_col:
-            lbl = (f"🔍 Extract → \"{st.session_state.active_field}\""
-                   if st.session_state.active_field else "🔍 Extract Text")
-            if st.button(lbl, use_container_width=True, type="primary"):
-                with st.spinner("Running OCR…"):
-                    try:
-                        text = run_ocr(crop)
-                        if not text:
-                            st.warning("No text detected — try a wider selection.")
-                        else:
-                            if st.session_state.active_field:
-                                field = st.session_state.active_field
-                                st.session_state.extracted[field] = text
-                                st.session_state.boxes.append({
-                                    "x1":sel["x1"],"y1":sel["y1"],
-                                    "x2":sel["x2"],"y2":sel["y2"],
-                                })
-                                fields = st.session_state.fields
-                                if field in fields:
-                                    idx = fields.index(field)
-                                    if idx+1 < len(fields):
-                                        st.session_state.active_field = fields[idx+1]
-                                st.session_state.sel = None
-                                st.rerun()
-                            else:
-                                st.success(f"✅ `{text}`")
-                    except Exception as e:
-                        st.error(f"OCR error: {e}")
-        with reset_col:
-            if st.button("↺ Reset", use_container_width=True):
-                st.session_state.sel = None
-                st.rerun()
+    # Extract button is above the canvas (see instruction block)
