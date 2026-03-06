@@ -2,7 +2,7 @@ import streamlit as st
 import json, io, os, re, tempfile, base64
 import fitz
 from PIL import Image, ImageDraw, ImageFilter, ImageEnhance
-import streamlit.components.v1 as components
+import pytesseract
 
 st.set_page_config(page_title="DocExtract", page_icon="🔍", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -20,6 +20,7 @@ html,body,[class*="css"]{font-family:'Lato',sans-serif!important}
 .stButton>button{background:#F59E0B!important;color:#0c0c0f!important;border:none!important;border-radius:8px!important;font-weight:700!important}
 .stButton>button:hover{background:#d97706!important}
 .stSelectbox>div>div,.stTextInput>div>div>input,.stTextArea>div>div>textarea{background:#1c1c21!important;border:1px solid #26262d!important;border-radius:8px!important;color:#e2dfd8!important}
+.stSlider>div>div>div>div{background:#F59E0B!important}
 #MainMenu,footer,header{visibility:hidden}
 .block-container{padding-top:0!important}
 hr{border-color:#1e1e22!important}
@@ -27,45 +28,21 @@ hr{border-color:#1e1e22!important}
 """, unsafe_allow_html=True)
 
 # ── OCR ───────────────────────────────────────────────────────────────────────
-@st.cache_resource(show_spinner="Loading OCR engine…")
-def load_ocr():
-    try:
-        import pytesseract
-        pytesseract.get_tesseract_version()
-        return "tesseract", pytesseract
-    except Exception:
-        pass
-    try:
-        import easyocr
-        return "easyocr", easyocr.Reader(['en'], gpu=False, verbose=False)
-    except Exception:
-        pass
-    return "pymupdf", None
-
-OCR_ENGINE, OCR_OBJ = load_ocr()
-
 def preprocess(img: Image.Image) -> Image.Image:
     gray = img.convert("L")
     gray = ImageEnhance.Contrast(gray).enhance(2.0)
     gray = gray.filter(ImageFilter.SHARPEN)
     w, h = gray.size
-    if w < 300:
-        scale = 300 / w
+    if w < 400:
+        scale = 400 / w
         gray = gray.resize((int(w*scale), int(h*scale)), Image.LANCZOS)
     return gray
 
 def run_ocr(img: Image.Image) -> str:
     processed = preprocess(img)
-    if OCR_ENGINE == "tesseract":
-        import pytesseract
-        r6  = pytesseract.image_to_string(processed, config="--psm 6  --oem 3").strip()
-        r11 = pytesseract.image_to_string(processed, config="--psm 11 --oem 3").strip()
-        return r6 if len(r6) >= len(r11) else r11
-    elif OCR_ENGINE == "easyocr":
-        import numpy as np
-        arr = np.array(processed.convert("RGB"))
-        return " ".join(OCR_OBJ.readtext(arr, detail=0, paragraph=True)).strip()
-    return ""
+    r6  = pytesseract.image_to_string(processed, config="--psm 6  --oem 3").strip()
+    r11 = pytesseract.image_to_string(processed, config="--psm 11 --oem 3").strip()
+    return r6 if len(r6) >= len(r11) else r11
 
 def pdf_to_pages(path: str):
     doc = fitz.open(path)
@@ -108,17 +85,22 @@ def auto_extract(img: Image.Image, fields: list, pdf_text: str = "") -> dict:
         return result
     return {f: smart_match(text, f) for f in fields}
 
-def annotate(img: Image.Image, boxes: list) -> Image.Image:
+def draw_selection(img: Image.Image, boxes, x1, y1, x2, y2, show_sel=True) -> Image.Image:
     out = img.copy()
     draw = ImageDraw.Draw(out, "RGBA")
+    # Past boxes
     for b in boxes:
         draw.rectangle([b["x1"],b["y1"],b["x2"],b["y2"]],
-                       outline="#F59E0B", width=3, fill=(245,158,11,35))
+                       outline="#34d399", width=2, fill=(52,211,153,25))
+    # Current selection
+    if show_sel and x2 > x1 and y2 > y1:
+        draw.rectangle([x1, y1, x2, y2],
+                       outline="#F59E0B", width=3, fill=(245,158,11,40))
     return out
 
-def pil_to_b64(img: Image.Image, quality=88) -> str:
+def pil_to_b64(img: Image.Image) -> str:
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=quality)
+    img.save(buf, format="JPEG", quality=90)
     return base64.standard_b64encode(buf.getvalue()).decode()
 
 PRESETS = {
@@ -137,8 +119,7 @@ PRESETS = {
 # ── Session state ─────────────────────────────────────────────────────────────
 DEFAULTS = dict(pages=[], pdf_texts=[], extracted={}, boxes=[],
                 page_idx=0, active_field=None,
-                fields=list(PRESETS["📄 Invoice"]),
-                click1=None, click2=None, crop_img=None)
+                fields=list(PRESETS["📄 Invoice"]))
 for k, v in DEFAULTS.items():
     if k not in st.session_state:
         st.session_state[k] = v
@@ -147,11 +128,9 @@ for k, v in DEFAULTS.items():
 st.markdown("""
 <div style="padding:20px 0 14px;border-bottom:1px solid #26262d;margin-bottom:20px">
   <div class="app-title">Doc<span>Extract</span></div>
-  <div class="app-sub">Upload · Click two corners · Extract with OCR — no API key needed</div>
+  <div class="app-sub">Upload · Use sliders to frame a region · Extract with OCR — no API key needed</div>
 </div>""", unsafe_allow_html=True)
-
-ec = {"tesseract":"#34d399","easyocr":"#818cf8","pymupdf":"#F59E0B"}.get(OCR_ENGINE,"#aaa")
-st.markdown(f'<span style="font-family:monospace;font-size:11px;color:{ec}">● {OCR_ENGINE.upper()} active</span>',
+st.markdown('<span style="font-family:monospace;font-size:11px;color:#34d399">● TESSERACT active</span>',
             unsafe_allow_html=True)
 
 left, right = st.columns([1, 1.9], gap="large")
@@ -198,13 +177,12 @@ with left:
 
     st.markdown("<hr>", unsafe_allow_html=True)
     st.markdown('<div class="panel-label">📊 Extracted Data</div>', unsafe_allow_html=True)
-
     for field in st.session_state.fields:
-        val       = st.session_state.extracted.get(field, "")
-        is_active = field == st.session_state.active_field
-        label     = f"**→ {field}**" if is_active else field
-        new_val   = st.text_input(label, value=val, key=f"inp_{field}",
-                                   placeholder="not extracted yet")
+        val     = st.session_state.extracted.get(field, "")
+        is_act  = field == st.session_state.active_field
+        label   = f"**→ {field}**" if is_act else field
+        new_val = st.text_input(label, value=val, key=f"inp_{field}",
+                                 placeholder="not extracted yet")
         if new_val != val:
             st.session_state.extracted[field] = new_val
 
@@ -222,9 +200,6 @@ with left:
     if st.button("🗑 Clear All", use_container_width=True):
         st.session_state.extracted = {}
         st.session_state.boxes     = []
-        st.session_state.click1    = None
-        st.session_state.click2    = None
-        st.session_state.crop_img  = None
         st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -250,9 +225,6 @@ with right:
             st.session_state.pdf_texts = []
         st.session_state.page_idx  = 0
         st.session_state.boxes     = []
-        st.session_state.click1    = None
-        st.session_state.click2    = None
-        st.session_state.crop_img  = None
 
     if not st.session_state.pages:
         st.markdown("""<div style="border:2px dashed #26262d;border-radius:12px;
@@ -269,10 +241,7 @@ with right:
         with c1:
             if st.button("◀ Prev") and st.session_state.page_idx > 0:
                 st.session_state.page_idx -= 1
-                st.session_state.boxes    = []
-                st.session_state.click1   = None
-                st.session_state.click2   = None
-                st.session_state.crop_img = None
+                st.session_state.boxes = []
                 st.rerun()
         with c2:
             st.markdown(f'<div style="text-align:center;color:#6b6b78;font-size:12px;'
@@ -282,150 +251,42 @@ with right:
         with c3:
             if st.button("Next ▶") and st.session_state.page_idx < n-1:
                 st.session_state.page_idx += 1
-                st.session_state.boxes    = []
-                st.session_state.click1   = None
-                st.session_state.click2   = None
-                st.session_state.crop_img = None
+                st.session_state.boxes = []
                 st.rerun()
 
-    page_img    = st.session_state.pages[st.session_state.page_idx]
-    iw, ih      = page_img.size
+    page_img = st.session_state.pages[st.session_state.page_idx]
+    iw, ih   = page_img.size
 
-    # ── Instruction ───────────────────────────────────────────────────────────
-    c1_state = st.session_state.click1
-    c2_state = st.session_state.click2
+    # ── Two-column layout: sliders left, preview right ────────────────────────
+    sl_col, prev_col = st.columns([1, 2])
 
-    if not st.session_state.active_field:
-        st.markdown('<div class="infobox">👈 First select a <strong>Target Field</strong> on the left.</div>',
-                    unsafe_allow_html=True)
-    elif c1_state is None:
-        st.markdown(f'<div class="infobox">🖱 <strong>Click #1</strong> — click the '
-                    f'<strong>top-left corner</strong> of the region containing '
-                    f'<strong>{st.session_state.active_field}</strong></div>',
-                    unsafe_allow_html=True)
-    elif c2_state is None:
-        st.markdown(f'<div class="infobox">🖱 <strong>Click #2</strong> — click the '
-                    f'<strong>bottom-right corner</strong> of the region containing '
-                    f'<strong>{st.session_state.active_field}</strong></div>',
-                    unsafe_allow_html=True)
-    else:
-        st.markdown('<div class="infobox">✅ Region selected — click <strong>Extract</strong> below, '
-                    'or click on the image to re-select.</div>', unsafe_allow_html=True)
+    with sl_col:
+        st.markdown('<div class="panel-label">📐 Select Region</div>', unsafe_allow_html=True)
+        st.caption("Move sliders to frame the text you want to extract")
 
-    # ── Interactive image rendered as HTML component ──────────────────────────
-    # The component renders the image with click detection.
-    # On each click it posts a message; we capture it via a hidden form trick
-    # that stores click coords in st.session_state using st.query_params.
-    disp_w  = 660
-    disp_h  = int(ih * disp_w / iw)
+        # Sliders as % of image dimensions for resolution-independence
+        left_pct  = st.slider("Left %",   0, 100,  0, 1, key="sl_left")
+        right_pct = st.slider("Right %",  0, 100, 100, 1, key="sl_right")
+        top_pct   = st.slider("Top %",    0, 100,  0, 1, key="sl_top")
+        bottom_pct= st.slider("Bottom %", 0, 100, 100, 1, key="sl_bottom")
 
-    # Draw existing boxes + current selection on display image
-    display_img = annotate(page_img, st.session_state.boxes)
-    draw        = ImageDraw.Draw(display_img, "RGBA")
+        x1 = int(iw * left_pct   / 100)
+        x2 = int(iw * right_pct  / 100)
+        y1 = int(ih * top_pct    / 100)
+        y2 = int(ih * bottom_pct / 100)
 
-    # Draw click1 marker
-    if c1_state:
-        cx = int(c1_state[0] * disp_w / iw)
-        cy = int(c1_state[1] * disp_h / ih)
-        px1, py1 = c1_state
-        draw.ellipse([px1-12, py1-12, px1+12, py1+12],
-                     fill=(245,158,11,200), outline="#F59E0B", width=2)
-        draw.text((px1+15, py1-8), "1", fill="#F59E0B")
+        has_sel = x2 > x1 + 10 and y2 > y1 + 10
 
-    # Draw selection rectangle if both clicks exist
-    if c1_state and c2_state:
-        x1 = min(c1_state[0], c2_state[0])
-        y1 = min(c1_state[1], c2_state[1])
-        x2 = max(c1_state[0], c2_state[0])
-        y2 = max(c1_state[1], c2_state[1])
-        draw.rectangle([x1, y1, x2, y2],
-                       outline="#F59E0B", width=3, fill=(245,158,11,40))
+        if has_sel:
+            pad  = 4
+            crop = page_img.crop((max(0,x1-pad), max(0,y1-pad),
+                                   min(iw,x2+pad), min(ih,y2+pad)))
 
-    b64 = pil_to_b64(display_img)
-
-    # Render interactive image — clicks update query params → Streamlit reruns
-    click_html = f"""<!DOCTYPE html><html><head><style>
-    body{{margin:0;padding:0;background:#0c0c0f;overflow:hidden}}
-    #wrap{{position:relative;display:inline-block;cursor:crosshair}}
-    img{{display:block;border:1px solid #26262d;border-radius:10px;width:{disp_w}px}}
-    #dot{{position:absolute;width:18px;height:18px;border-radius:50%;
-          background:#F59E0B;border:2px solid #fff;
-          transform:translate(-50%,-50%);display:none;pointer-events:none}}
-    #msg{{font-family:monospace;font-size:11px;color:#6b6b78;margin-top:6px;
-          padding:5px 8px;background:#141417;border-radius:5px}}
-    </style></head><body>
-    <div id="wrap">
-      <img id="docimg" src="data:image/jpeg;base64,{b64}"/>
-      <div id="dot"></div>
-    </div>
-    <div id="msg">Click on the document to set a corner point</div>
-    <script>
-    (function(){{
-      const img   = document.getElementById('docimg');
-      const dot   = document.getElementById('dot');
-      const msg   = document.getElementById('msg');
-      const scaleX = {iw} / {disp_w};
-      const scaleY = {ih} / {disp_h};
-      const clickNum = {1 if c1_state is None else (2 if c2_state is None else 1)};
-
-      img.addEventListener('click', function(e) {{
-        const r  = img.getBoundingClientRect();
-        const rx = e.clientX - r.left;
-        const ry = e.clientY - r.top;
-        const px = Math.round(rx * scaleX);
-        const py = Math.round(ry * scaleY);
-
-        // Show dot
-        dot.style.left = rx + 'px';
-        dot.style.top  = ry + 'px';
-        dot.style.display = 'block';
-        msg.textContent = 'Click ' + clickNum + ' → (' + px + ', ' + py + ') — updating…';
-
-        // Navigate to same URL with click params added
-        const url = new URL(window.parent.location.href);
-        url.searchParams.set('cx', px);
-        url.searchParams.set('cy', py);
-        url.searchParams.set('cn', clickNum);
-        window.parent.location.href = url.toString();
-      }});
-    }})();
-    </script></body></html>"""
-
-    components.html(click_html, height=disp_h + 40, scrolling=False)
-
-    # ── Read click from query params ──────────────────────────────────────────
-    params = st.query_params
-    if "cx" in params and "cy" in params and "cn" in params:
-        try:
-            cx = int(params["cx"])
-            cy = int(params["cy"])
-            cn = int(params["cn"])
-            if cn == 1:
-                st.session_state.click1 = (cx, cy)
-                st.session_state.click2 = None
-                st.session_state.crop_img = None
-            else:
-                st.session_state.click2 = (cx, cy)
-            # Clear params and rerun cleanly
-            st.query_params.clear()
-            st.rerun()
-        except Exception:
-            st.query_params.clear()
-
-    # ── Show crop preview + extract button ────────────────────────────────────
-    if c1_state and c2_state:
-        x1 = max(0, min(c1_state[0], c2_state[0]) - 6)
-        y1 = max(0, min(c1_state[1], c2_state[1]) - 6)
-        x2 = min(iw, max(c1_state[0], c2_state[0]) + 6)
-        y2 = min(ih, max(c1_state[1], c2_state[1]) + 6)
-
-        if x2 - x1 > 8 and y2 - y1 > 8:
-            crop = page_img.crop((x1, y1, x2, y2))
-            st.markdown('<div class="panel-label" style="margin-top:12px">🔎 Region Preview</div>',
+            st.markdown('<div class="panel-label" style="margin-top:14px">🔎 Region Preview</div>',
                         unsafe_allow_html=True)
-            st.image(crop, width=min(crop.width * 2, 600))
+            st.image(crop, use_container_width=True)
 
-            btn_label = (f"🔍 Extract into \"{st.session_state.active_field}\""
+            btn_label = (f"🔍 Extract → \"{st.session_state.active_field}\""
                          if st.session_state.active_field else "🔍 Extract Text")
 
             if st.button(btn_label, use_container_width=True, type="primary"):
@@ -433,30 +294,29 @@ with right:
                     try:
                         text = run_ocr(crop)
                         if not text:
-                            st.warning("No text detected — try selecting a larger area "
-                                       "or use ⚡ Auto-Extract All.")
+                            st.warning("No text detected — adjust sliders to frame text more tightly.")
                         else:
-                            st.success(f"✅ `{text[:120]}{'…' if len(text)>120 else ''}`")
+                            st.success(f"✅ `{text[:100]}{'…' if len(text)>100 else ''}`")
                             if st.session_state.active_field:
                                 st.session_state.extracted[st.session_state.active_field] = text
                                 st.session_state.boxes.append({"x1":x1,"y1":y1,"x2":x2,"y2":y2})
-                                # Advance to next field
                                 fields = st.session_state.fields
                                 if st.session_state.active_field in fields:
                                     idx = fields.index(st.session_state.active_field)
                                     if idx + 1 < len(fields):
                                         st.session_state.active_field = fields[idx+1]
-                                st.session_state.click1 = None
-                                st.session_state.click2 = None
-                                st.session_state.crop_img = None
                                 st.rerun()
                     except Exception as e:
                         st.error(f"OCR error: {e}")
 
-            col_r = st.columns([1,1])[1]
-            with col_r:
-                if st.button("↺ Re-select region", use_container_width=True):
-                    st.session_state.click1   = None
-                    st.session_state.click2   = None
-                    st.session_state.crop_img = None
-                    st.rerun()
+    with prev_col:
+        st.markdown('<div class="panel-label">🗺 Document (with selection)</div>',
+                    unsafe_allow_html=True)
+        annotated = draw_selection(page_img, st.session_state.boxes,
+                                    x1, y1, x2, y2, has_sel)
+        st.image(annotated, use_container_width=True)
+        if st.session_state.active_field:
+            st.markdown(f'<div class="infobox" style="margin-top:8px">🎯 Framing region for: '
+                        f'<strong>{st.session_state.active_field}</strong><br>'
+                        f'Use sliders on the left to tighten the yellow box around the text, '
+                        f'then click Extract.</div>', unsafe_allow_html=True)
