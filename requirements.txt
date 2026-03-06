@@ -2,3 +2,4 @@ pymupdf
 Pillow
 pytesseract
 easyocr
+streamlit-image-coordinates
