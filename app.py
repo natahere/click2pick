@@ -63,7 +63,7 @@ def load_document(file_obj) -> tuple[list[Image.Image], str]:
     """Load uploaded file → list of PIL pages + status message."""
     if file_obj is None:
         return [], "No file uploaded."
-    path = file_obj.name
+    path = file_obj if isinstance(file_obj, str) else file_obj.name
     ext = path.rsplit(".", 1)[-1].lower()
     if ext == "pdf":
         pages = pdf_to_pil_pages(path)
