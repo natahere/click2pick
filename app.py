@@ -1,721 +1,576 @@
-"""
-DocExtract — AI-powered document data extraction
-Hosted on Hugging Face Spaces (Gradio)
-"""
-
-import gradio as gr
+import streamlit as st
 import anthropic
 import base64
 import json
 import io
-import os
 import fitz  # PyMuPDF
-from PIL import Image, ImageDraw
+from PIL import Image
+from streamlit_drawable_canvas import st_canvas
 
-# ── Constants ─────────────────────────────────────────────────────────────────
+# ── Page config ──────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="DocExtract",
+    page_icon="🔍",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 
-PRESETS = {
-    "📄 Invoice": [
-        "Vendor Name", "Invoice Number", "Invoice Date", "Due Date",
-        "Subtotal", "Tax Amount", "Total Amount", "Payment Terms", "PO Number"
-    ],
-    "🪪 ID / Passport": [
-        "Full Name", "Date of Birth", "Gender", "Document Number",
-        "Nationality", "Issue Date", "Expiry Date", "Place of Birth", "MRZ Line"
-    ],
-    "🧾 Receipt": [
-        "Store Name", "Store Address", "Date", "Time",
-        "Items", "Subtotal", "Tax", "Total", "Payment Method", "Transaction ID"
-    ],
-    "📝 Contract": [
-        "Party A", "Party B", "Contract Date", "Effective Date",
-        "Contract Value", "Duration", "Jurisdiction", "Governing Law"
-    ],
-    "🔑 Generic Key-Value": [],   # auto-extracted by Claude
-    "✏️ Custom": [],
+# ── Custom CSS ────────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
+
+html, body, [class*="css"] {
+    font-family: 'DM Sans', sans-serif;
 }
 
-DEFAULT_PRESET = "📄 Invoice"
+.stApp {
+    background: #0f0f11;
+    color: #e8e6e1;
+}
 
-# HF Spaces can store a secret called ANTHROPIC_API_KEY
-_ENV_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+/* Header */
+.main-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 20px 0 8px 0;
+    border-bottom: 1px solid #222;
+    margin-bottom: 24px;
+}
+.logo-mark {
+    width: 36px; height: 36px;
+    background: linear-gradient(135deg, #f0a500, #e06c00);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+}
+.app-title {
+    font-size: 22px;
+    font-weight: 600;
+    color: #f0f0f0;
+    letter-spacing: -0.3px;
+}
+.app-subtitle {
+    font-size: 13px;
+    color: #666;
+    margin-top: 2px;
+}
+
+/* Panel labels */
+.panel-label {
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    font-weight: 500;
+    color: #555;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+}
+
+/* Field cards */
+.field-card {
+    background: #161618;
+    border: 1px solid #242428;
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 10px;
+    transition: border-color 0.2s;
+}
+.field-card:hover {
+    border-color: #f0a500;
+}
+.field-label {
+    font-size: 11px;
+    font-weight: 500;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    margin-bottom: 6px;
+    font-family: 'DM Mono', monospace;
+}
+.field-value {
+    font-size: 15px;
+    color: #e8e6e1;
+    min-height: 20px;
+}
+.field-empty {
+    color: #3a3a3e;
+    font-style: italic;
+    font-size: 13px;
+}
+
+/* Upload zone */
+.upload-zone {
+    border: 2px dashed #2a2a2e;
+    border-radius: 12px;
+    padding: 40px;
+    text-align: center;
+    transition: border-color 0.2s;
+}
+
+/* Status badge */
+.status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #1a1a1e;
+    border: 1px solid #2a2a2e;
+    border-radius: 20px;
+    padding: 4px 12px;
+    font-size: 12px;
+    color: #888;
+    font-family: 'DM Mono', monospace;
+}
+.status-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: #f0a500;
+    animation: pulse 2s infinite;
+}
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+/* Buttons */
+.stButton > button {
+    background: #f0a500 !important;
+    color: #0f0f11 !important;
+    border: none !important;
+    border-radius: 8px !important;
+    font-weight: 600 !important;
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 13px !important;
+    padding: 8px 16px !important;
+    transition: all 0.2s !important;
+}
+.stButton > button:hover {
+    background: #e09500 !important;
+    transform: translateY(-1px) !important;
+}
+
+/* Selectbox */
+.stSelectbox > div > div {
+    background: #161618 !important;
+    border: 1px solid #2a2a2e !important;
+    border-radius: 8px !important;
+    color: #e8e6e1 !important;
+}
+
+/* Text input */
+.stTextInput > div > div > input {
+    background: #161618 !important;
+    border: 1px solid #2a2a2e !important;
+    border-radius: 8px !important;
+    color: #e8e6e1 !important;
+}
+
+/* Text area */
+.stTextArea > div > div > textarea {
+    background: #161618 !important;
+    border: 1px solid #2a2a2e !important;
+    border-radius: 8px !important;
+    color: #e8e6e1 !important;
+    font-family: 'DM Mono', monospace !important;
+}
+
+/* Divider */
+hr { border-color: #1e1e22 !important; }
+
+/* Instruction box */
+.instruction-box {
+    background: #13130f;
+    border: 1px solid #2a2600;
+    border-left: 3px solid #f0a500;
+    border-radius: 8px;
+    padding: 12px 16px;
+    font-size: 13px;
+    color: #a89060;
+    margin-bottom: 16px;
+}
+
+/* Page nav */
+.page-nav {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+    align-items: center;
+}
+.page-info {
+    font-family: 'DM Mono', monospace;
+    font-size: 12px;
+    color: #555;
+}
+
+/* JSON output */
+.json-output {
+    background: #0a0a0c;
+    border: 1px solid #1e1e22;
+    border-radius: 8px;
+    padding: 16px;
+    font-family: 'DM Mono', monospace;
+    font-size: 12px;
+    color: #a0c080;
+    white-space: pre-wrap;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+/* Hide streamlit branding */
+#MainMenu, footer, header { visibility: hidden; }
+.block-container { padding-top: 0 !important; }
+</style>
+""", unsafe_allow_html=True)
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def pil_to_b64(img: Image.Image, fmt="PNG") -> str:
+def pdf_to_images(pdf_bytes: bytes) -> list[Image.Image]:
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    images = []
+    for page in doc:
+        mat = fitz.Matrix(2.0, 2.0)  # 2x zoom for clarity
+        pix = page.get_pixmap(matrix=mat)
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        images.append(img)
+    return images
+
+
+def image_to_b64(img: Image.Image, fmt="PNG") -> str:
     buf = io.BytesIO()
     img.save(buf, format=fmt)
     return base64.standard_b64encode(buf.getvalue()).decode()
 
 
-def pdf_to_pil_pages(file_path: str) -> list[Image.Image]:
-    doc = fitz.open(file_path)
-    pages = []
-    for page in doc:
-        mat = fitz.Matrix(2.0, 2.0)
-        pix = page.get_pixmap(matrix=mat)
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        pages.append(img)
-    return pages
+def crop_region(img: Image.Image, rect: dict, canvas_w: int, canvas_h: int) -> Image.Image:
+    """Map canvas coordinates → image coordinates and crop."""
+    iw, ih = img.size
+    sx = iw / canvas_w
+    sy = ih / canvas_h
+    x1 = int(rect["left"] * sx)
+    y1 = int(rect["top"] * sy)
+    x2 = int((rect["left"] + rect["width"]) * sx)
+    y2 = int((rect["top"] + rect["height"]) * sy)
+    x1, x2 = max(0, x1), min(iw, x2)
+    y1, y2 = max(0, y1), min(ih, y2)
+    return img.crop((x1, y1, x2, y2))
 
 
-def load_document(file_obj) -> tuple[list[Image.Image], str]:
-    """Load uploaded file → list of PIL pages + status message."""
-    if file_obj is None:
-        return [], "No file uploaded."
-    path = file_obj if isinstance(file_obj, str) else file_obj.name
-    ext = path.rsplit(".", 1)[-1].lower()
-    if ext == "pdf":
-        pages = pdf_to_pil_pages(path)
-        return pages, f"✅ PDF loaded — {len(pages)} page(s)"
-    elif ext in ("png", "jpg", "jpeg", "webp", "bmp", "tiff"):
-        img = Image.open(path).convert("RGB")
-        return [img], "✅ Image loaded"
-    else:
-        return [], f"❌ Unsupported file type: .{ext}"
-
-
-def get_client(api_key: str):
-    key = api_key.strip() or _ENV_KEY
-    if not key:
-        raise ValueError("Please enter your Anthropic API key.")
-    return anthropic.Anthropic(api_key=key)
-
-
-# ── Core extraction functions ─────────────────────────────────────────────────
-
-def extract_region(img: Image.Image, x1: int, y1: int, x2: int, y2: int,
-                   field_name: str, api_key: str) -> str:
-    """OCR a cropped region with Claude Vision."""
-    crop = img.crop((x1, y1, x2, y2))
-    client = get_client(api_key)
-    resp = client.messages.create(
+def extract_text_claude(cropped_img: Image.Image, field_name: str, api_key: str) -> str:
+    """Send cropped region to Claude Vision and extract text."""
+    client = anthropic.Anthropic(api_key=api_key)
+    b64 = image_to_b64(cropped_img)
+    prompt = (
+        f"You are a precise OCR engine. Extract ONLY the text visible in this image region. "
+        f"This text will be used for the field: '{field_name}'. "
+        f"Return ONLY the extracted text with no explanation, no quotes, no formatting. "
+        f"If no text is visible, return an empty string."
+    )
+    response = client.messages.create(
         model="claude-opus-4-5",
         max_tokens=256,
         messages=[{
             "role": "user",
             "content": [
-                {"type": "image", "source": {"type": "base64",
-                                              "media_type": "image/png",
-                                              "data": pil_to_b64(crop)}},
-                {"type": "text", "text": (
-                    f"Extract ONLY the text visible in this image region. "
-                    f"This is for the field '{field_name}'. "
-                    "Return ONLY the raw text, no quotes, no explanation."
-                )},
-            ]
-        }]
-    )
-    return resp.content[0].text.strip()
-
-
-def auto_extract_fields(img: Image.Image, fields: list[str], api_key: str) -> dict:
-    """Send full page to Claude, extract all fields at once."""
-    client = get_client(api_key)
-    is_kv = not fields  # Generic key-value mode
-
-    if is_kv:
-        prompt = (
-            "You are a precise document parser. "
-            "Extract ALL key-value pairs visible in this document. "
-            "Return ONLY a flat JSON object: {\"key\": \"value\", ...}. "
-            "No markdown, no explanation."
-        )
-    else:
-        prompt = (
-            f"You are a precise document parser. "
-            f"Extract these fields from the document: {json.dumps(fields)}. "
-            "Return ONLY a flat JSON object with those exact field names as keys. "
-            "Use empty string for fields not found. No markdown, no explanation."
-        )
-
-    resp = client.messages.create(
-        model="claude-opus-4-5",
-        max_tokens=2048,
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "image", "source": {"type": "base64",
-                                              "media_type": "image/png",
-                                              "data": pil_to_b64(img)}},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b64}},
                 {"type": "text", "text": prompt},
             ]
         }]
     )
-    raw = resp.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+    return response.content[0].text.strip()
+
+
+def extract_all_fields_claude(img: Image.Image, fields: list[str], api_key: str) -> dict:
+    """Send full page to Claude and extract all fields at once."""
+    client = anthropic.Anthropic(api_key=api_key)
+    b64 = image_to_b64(img)
+    fields_json = json.dumps(fields)
+    prompt = (
+        f"You are a precise document data extractor. "
+        f"Extract the following fields from this document image: {fields_json}. "
+        f"Return ONLY a valid JSON object with field names as keys and extracted values as strings. "
+        f"If a field is not found, use an empty string. No explanation, no markdown."
+    )
+    response = client.messages.create(
+        model="claude-opus-4-5",
+        max_tokens=1024,
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b64}},
+                {"type": "text", "text": prompt},
+            ]
+        }]
+    )
+    raw = response.content[0].text.strip()
+    raw = raw.replace("```json", "").replace("```", "").strip()
     return json.loads(raw)
 
 
-# ── State helpers ─────────────────────────────────────────────────────────────
-
-def fields_from_preset(preset_name: str) -> str:
-    fields = PRESETS.get(preset_name, [])
-    return "\n".join(fields)
-
-
-def build_fields_df(fields: list[str], extracted: dict) -> list[list]:
-    """Return rows for the dataframe: [Field, Value]"""
-    if not fields:
-        return [[k, v] for k, v in extracted.items()]
-    return [[f, extracted.get(f, "")] for f in fields]
-
-
-def annotate_page(img: Image.Image, boxes: list[dict]) -> Image.Image:
-    """Draw extraction boxes on the image for visual feedback."""
-    annotated = img.copy()
-    draw = ImageDraw.Draw(annotated, "RGBA")
-    for box in boxes:
-        x1, y1, x2, y2 = box["x1"], box["y1"], box["x2"], box["y2"]
-        draw.rectangle([x1, y1, x2, y2], outline="#F59E0B", width=3,
-                       fill=(245, 158, 11, 30))
-    return annotated
-
-
-# ── CSS / Theme ───────────────────────────────────────────────────────────────
-
-CUSTOM_CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&family=Lato:wght@300;400;700&display=swap');
-
-:root {
-    --bg:         #0c0c0f;
-    --surface:    #141417;
-    --surface2:   #1c1c21;
-    --border:     #26262d;
-    --accent:     #F59E0B;
-    --accent-dim: #78480a;
-    --text:       #e2dfd8;
-    --muted:      #6b6b78;
-    --success:    #34d399;
-    --error:      #f87171;
+# ── Preset field templates ────────────────────────────────────────────────────
+PRESETS = {
+    "Invoice": ["Vendor Name", "Invoice Number", "Invoice Date", "Due Date", "Total Amount", "Tax Amount", "Subtotal", "Payment Terms"],
+    "ID / Passport": ["Full Name", "Date of Birth", "Document Number", "Nationality", "Issue Date", "Expiry Date", "Place of Birth"],
+    "Receipt": ["Store Name", "Date", "Total", "Tax", "Payment Method", "Items"],
+    "Contract": ["Party A", "Party B", "Contract Date", "Effective Date", "Contract Value", "Jurisdiction"],
+    "Custom": [],
 }
 
-/* Global reset */
-body, .gradio-container { background: var(--bg) !important; color: var(--text) !important; }
-* { font-family: 'Lato', sans-serif !important; }
-code, pre, .monospace { font-family: 'JetBrains Mono', monospace !important; }
+CANVAS_W = 700
 
-/* Header */
-#app-header {
-    padding: 28px 0 20px;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 24px;
-}
-#app-header h1 {
-    font-family: 'Syne', sans-serif !important;
-    font-size: 32px;
-    font-weight: 800;
-    color: #fff;
-    letter-spacing: -1px;
-    margin: 0;
-}
-#app-header h1 span { color: var(--accent); }
-#app-header p {
-    color: var(--muted);
-    font-size: 14px;
-    margin: 6px 0 0;
-    font-weight: 300;
-}
+# ── Session state ─────────────────────────────────────────────────────────────
+if "fields" not in st.session_state:
+    st.session_state.fields = list(PRESETS["Invoice"])
+if "extracted" not in st.session_state:
+    st.session_state.extracted = {}
+if "pages" not in st.session_state:
+    st.session_state.pages = []
+if "page_idx" not in st.session_state:
+    st.session_state.page_idx = 0
+if "active_field" not in st.session_state:
+    st.session_state.active_field = None
+if "api_key" not in st.session_state:
+    st.session_state.api_key = ""
 
-/* Panels */
-.panel {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    padding: 20px;
-}
-.panel-label {
-    font-family: 'JetBrains Mono', monospace !important;
-    font-size: 10px;
-    font-weight: 500;
-    color: var(--muted);
-    letter-spacing: 2px;
-    text-transform: uppercase;
-    margin-bottom: 14px;
-}
 
-/* Gradio overrides */
-.gr-button {
-    background: var(--accent) !important;
-    color: #0c0c0f !important;
-    border: none !important;
-    border-radius: 8px !important;
-    font-weight: 700 !important;
-    font-size: 13px !important;
-    font-family: 'Syne', sans-serif !important;
-    padding: 10px 18px !important;
-    transition: all 0.18s !important;
-    cursor: pointer !important;
-}
-.gr-button:hover { background: #d97706 !important; transform: translateY(-1px) !important; }
-.gr-button.secondary {
-    background: var(--surface2) !important;
-    color: var(--text) !important;
-    border: 1px solid var(--border) !important;
-}
-.gr-button.secondary:hover { border-color: var(--accent) !important; }
+# ── Header ────────────────────────────────────────────────────────────────────
+st.markdown("""
+<div class="main-header">
+    <div class="logo-mark">🔍</div>
+    <div>
+        <div class="app-title">DocExtract</div>
+        <div class="app-subtitle">Click regions on your document to extract data</div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
-/* Inputs */
-input, textarea, select,
-.gr-input, .gr-textarea, .gr-dropdown {
-    background: var(--surface2) !important;
-    border: 1px solid var(--border) !important;
-    border-radius: 8px !important;
-    color: var(--text) !important;
-    font-size: 14px !important;
-}
-input:focus, textarea:focus {
-    border-color: var(--accent) !important;
-    outline: none !important;
-    box-shadow: 0 0 0 2px rgba(245,158,11,0.15) !important;
-}
 
-/* Image viewer */
-.doc-viewer img { border-radius: 10px; border: 1px solid var(--border); }
+# ── Layout: Left panel (fields) | Right panel (document) ─────────────────────
+left, right = st.columns([1, 1.8], gap="large")
 
-/* Dataframe */
-.gr-dataframe table {
-    background: var(--surface2) !important;
-    border-radius: 10px !important;
-    overflow: hidden !important;
-}
-.gr-dataframe th {
-    background: var(--surface) !important;
-    color: var(--accent) !important;
-    font-family: 'JetBrains Mono', monospace !important;
-    font-size: 11px !important;
-    letter-spacing: 1px !important;
-    text-transform: uppercase !important;
-    border-bottom: 1px solid var(--border) !important;
-}
-.gr-dataframe td {
-    color: var(--text) !important;
-    border-bottom: 1px solid var(--border) !important;
-    font-size: 13px !important;
-}
-.gr-dataframe tr:hover td { background: var(--surface) !important; }
 
-/* Status */
-.status-ok  { color: var(--success) !important; font-family: 'JetBrains Mono', monospace !important; font-size: 13px !important; }
-.status-err { color: var(--error)   !important; font-family: 'JetBrains Mono', monospace !important; font-size: 13px !important; }
+# ══════════════════════════════════════════════════════════════════════════════
+# LEFT PANEL — Configuration & Extracted Fields
+# ══════════════════════════════════════════════════════════════════════════════
+with left:
+    # API Key
+    st.markdown('<div class="panel-label">⚙️ Configuration</div>', unsafe_allow_html=True)
+    api_key = st.text_input("Anthropic API Key", type="password",
+                             value=st.session_state.api_key,
+                             placeholder="sk-ant-...",
+                             help="Get your key at console.anthropic.com")
+    st.session_state.api_key = api_key
 
-/* Tab styling */
-.gr-tab-nav button {
-    font-family: 'Syne', sans-serif !important;
-    font-weight: 600 !important;
-    font-size: 13px !important;
-    color: var(--muted) !important;
-    border-bottom: 2px solid transparent !important;
-    padding: 10px 16px !important;
-    background: transparent !important;
-}
-.gr-tab-nav button.selected {
-    color: var(--accent) !important;
-    border-bottom-color: var(--accent) !important;
-}
+    st.markdown("<hr>", unsafe_allow_html=True)
 
-/* Accordion */
-.gr-accordion { border: 1px solid var(--border) !important; border-radius: 10px !important; }
+    # Template selector
+    st.markdown('<div class="panel-label">📋 Field Template</div>', unsafe_allow_html=True)
+    preset_name = st.selectbox("Template", list(PRESETS.keys()), label_visibility="collapsed")
 
-/* JSON output */
-.json-box {
-    background: #080809;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 16px;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 12px;
-    color: #7ec8a4;
-    white-space: pre-wrap;
-    max-height: 360px;
-    overflow-y: auto;
-    line-height: 1.6;
-}
+    if preset_name != "Custom":
+        if st.button("Load Template"):
+            st.session_state.fields = list(PRESETS[preset_name])
+            st.session_state.extracted = {}
+            st.rerun()
 
-/* Hide footer */
-footer { display: none !important; }
-"""
-
-# ── Build Gradio UI ───────────────────────────────────────────────────────────
-
-def build_ui():
-    # Internal state (Gradio State)
-    pages_state     = gr.State([])       # list[PIL.Image]
-    extracted_state = gr.State({})       # dict field→value
-    boxes_state     = gr.State([])       # drawn boxes for annotation
-    page_idx_state  = gr.State(0)
-
-    with gr.Blocks(css=CUSTOM_CSS, title="DocExtract") as demo:
-
-        # ── Header ────────────────────────────────────────────────────────────
-        gr.HTML("""
-        <div id="app-header">
-            <h1>Doc<span>Extract</span></h1>
-            <p>Upload any document · Draw regions to extract · Export structured data</p>
-        </div>
-        """)
-
-        with gr.Row(equal_height=False):
-            # ══════════════════════════════════════════
-            # LEFT COLUMN — Config + Fields + Results
-            # ══════════════════════════════════════════
-            with gr.Column(scale=1, min_width=320):
-
-                # API Key
-                gr.HTML('<div class="panel-label">⚙ Configuration</div>')
-                api_key_input = gr.Textbox(
-                    label="Anthropic API Key",
-                    placeholder="sk-ant-api03-...",
-                    type="password",
-                    value=_ENV_KEY,
-                    info="Get yours at console.anthropic.com"
-                )
-
-                gr.HTML('<hr style="border-color:#26262d;margin:16px 0">')
-
-                # Template
-                gr.HTML('<div class="panel-label">📋 Field Template</div>')
-                preset_dd = gr.Dropdown(
-                    choices=list(PRESETS.keys()),
-                    value=DEFAULT_PRESET,
-                    label="",
-                    show_label=False,
-                    container=False,
-                )
-                fields_box = gr.Textbox(
-                    label="Fields (one per line)",
-                    value="\n".join(PRESETS[DEFAULT_PRESET]),
-                    lines=9,
-                    placeholder="Enter field names, one per line…\n(Leave empty for Generic Key-Value auto-detection)",
-                )
-
-                gr.HTML('<hr style="border-color:#26262d;margin:16px 0">')
-
-                # Extraction controls
-                gr.HTML('<div class="panel-label">🎯 Click-to-Extract</div>')
-                active_field_dd = gr.Dropdown(
-                    choices=PRESETS[DEFAULT_PRESET],
-                    label="Target Field",
-                    value=PRESETS[DEFAULT_PRESET][0] if PRESETS[DEFAULT_PRESET] else None,
-                    info="Select a field, then draw a box on the document →"
-                )
-
-                with gr.Row():
-                    extract_btn  = gr.Button("⚡ Auto-Extract All", variant="primary")
-                    clear_btn    = gr.Button("🗑 Clear", variant="secondary")
-
-                status_box = gr.HTML('<div class="status-ok"></div>')
-
-                gr.HTML('<hr style="border-color:#26262d;margin:16px 0">')
-
-                # Results table
-                gr.HTML('<div class="panel-label">📊 Extracted Data</div>')
-                results_df = gr.Dataframe(
-                    headers=["Field", "Value"],
-                    datatype=["str", "str"],
-                    value=[],
-                    interactive=True,
-                    wrap=True,
-                    row_count=(1, "dynamic"),
-                )
-
-                gr.HTML('<hr style="border-color:#26262d;margin:16px 0">')
-
-                # Export
-                gr.HTML('<div class="panel-label">💾 Export</div>')
-                with gr.Row():
-                    export_json_btn = gr.Button("⬇ JSON", variant="secondary", size="sm")
-                    export_csv_btn  = gr.Button("⬇ CSV",  variant="secondary", size="sm")
-                json_output  = gr.File(label="", visible=False)
-                csv_output   = gr.File(label="", visible=False)
-
-            # ══════════════════════════════════════════
-            # RIGHT COLUMN — Document Viewer + Selector
-            # ══════════════════════════════════════════
-            with gr.Column(scale=2, min_width=500):
-                gr.HTML('<div class="panel-label">📄 Document</div>')
-
-                upload_btn = gr.File(
-                    label="Upload PDF, PNG, JPG, WEBP, TIFF",
-                    file_types=[".pdf", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"],
-                    type="filepath",
-                )
-
-                with gr.Row():
-                    prev_btn     = gr.Button("◀ Prev", variant="secondary", size="sm", scale=1)
-                    page_label   = gr.HTML('<div style="text-align:center;color:#6b6b78;font-size:12px;font-family:monospace;padding:8px">—</div>', )
-                    next_btn     = gr.Button("Next ▶", variant="secondary", size="sm", scale=1)
-
-                gr.HTML("""
-                <div style="background:#13130f;border:1px solid #2a2600;border-left:3px solid #F59E0B;
-                     border-radius:8px;padding:10px 14px;font-size:12px;color:#a89060;margin-bottom:12px">
-                    <strong>How to use:</strong> Select a <em>Target Field</em> on the left →
-                    draw a rectangle on the document by clicking and dragging →
-                    text is auto-extracted. Or use <strong>Auto-Extract All</strong> for one-shot extraction.
-                </div>
-                """)
-
-                # Document image + coordinate capture
-                doc_image = gr.Image(
-                    label="",
-                    show_label=False,
-                    interactive=True,       # allows selection
-                    type="pil",
-                    height=780,
-                    elem_classes=["doc-viewer"],
-                )
-
-                # Coordinate inputs (hidden) — populated by JS from image click
-                with gr.Row(visible=False):
-                    sel_x1 = gr.Number(value=0, label="x1")
-                    sel_y1 = gr.Number(value=0, label="y1")
-                    sel_x2 = gr.Number(value=0, label="x2")
-                    sel_y2 = gr.Number(value=0, label="y2")
-                    do_extract_btn = gr.Button("Extract Region")
-
-        # ── Event wiring ──────────────────────────────────────────────────────
-
-        # Load document
-        def on_upload(file_obj):
-            pages, msg = load_document(file_obj)
-            if not pages:
-                return pages, 0, msg, None, '<div class="status-err">'+msg+'</div>'
-            img = pages[0]
-            status = f'<div class="status-ok">{msg}</div>'
-            page_lbl = f'<div style="text-align:center;color:#6b6b78;font-size:12px;font-family:monospace;padding:8px">Page 1 / {len(pages)}</div>'
-            return pages, 0, page_lbl, img, status
-
-        upload_btn.change(
-            on_upload,
-            inputs=[upload_btn],
-            outputs=[pages_state, page_idx_state, page_label, doc_image, status_box]
+    # Custom fields editor
+    with st.expander("✏️ Edit Fields", expanded=(preset_name == "Custom")):
+        fields_text = st.text_area(
+            "One field per line",
+            value="\n".join(st.session_state.fields),
+            height=160,
+            label_visibility="collapsed",
         )
+        if st.button("Update Fields"):
+            st.session_state.fields = [f.strip() for f in fields_text.splitlines() if f.strip()]
+            st.session_state.extracted = {f: st.session_state.extracted.get(f, "") for f in st.session_state.fields}
+            st.rerun()
+
+    st.markdown("<hr>", unsafe_allow_html=True)
+
+    # Active field selector
+    st.markdown('<div class="panel-label">🎯 Active Field (click-to-fill)</div>', unsafe_allow_html=True)
+    active = st.selectbox(
+        "Select field to fill by clicking the document",
+        ["— select —"] + st.session_state.fields,
+        label_visibility="collapsed"
+    )
+    st.session_state.active_field = None if active == "— select —" else active
+
+    # Auto-extract all button
+    if st.session_state.pages:
+        if st.button("⚡ Auto-Extract All Fields", use_container_width=True):
+            if not st.session_state.api_key:
+                st.error("Please enter your Anthropic API Key.")
+            else:
+                with st.spinner("Extracting all fields with Claude Vision..."):
+                    try:
+                        result = extract_all_fields_claude(
+                            st.session_state.pages[st.session_state.page_idx],
+                            st.session_state.fields,
+                            st.session_state.api_key
+                        )
+                        for k, v in result.items():
+                            if k in st.session_state.fields:
+                                st.session_state.extracted[k] = v
+                        st.success("Extraction complete!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
+    st.markdown("<hr>", unsafe_allow_html=True)
+
+    # Extracted fields display + editing
+    st.markdown('<div class="panel-label">📊 Extracted Data</div>', unsafe_allow_html=True)
+
+    changed = False
+    for field in st.session_state.fields:
+        val = st.session_state.extracted.get(field, "")
+        is_active = field == st.session_state.active_field
+
+        border = "#f0a500" if is_active else "#242428"
+        st.markdown(f"""
+        <div class="field-card" style="border-color:{border};">
+            <div class="field-label">{'→ ' if is_active else ''}{field}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        new_val = st.text_input(f"_{field}", value=val, label_visibility="collapsed", key=f"inp_{field}")
+        if new_val != val:
+            st.session_state.extracted[field] = new_val
+            changed = True
+
+    if changed:
+        st.rerun()
+
+    st.markdown("<hr>", unsafe_allow_html=True)
+
+    # Export
+    st.markdown('<div class="panel-label">💾 Export</div>', unsafe_allow_html=True)
+    col_a, col_b = st.columns(2)
+    with col_a:
+        json_str = json.dumps(st.session_state.extracted, indent=2)
+        st.download_button("⬇ JSON", json_str, "extracted.json", "application/json", use_container_width=True)
+    with col_b:
+        csv_lines = ["Field,Value"] + [f'"{k}","{v}"' for k, v in st.session_state.extracted.items()]
+        st.download_button("⬇ CSV", "\n".join(csv_lines), "extracted.csv", "text/csv", use_container_width=True)
+
+    if st.session_state.extracted:
+        st.markdown(f'<div class="json-output">{json.dumps(st.session_state.extracted, indent=2)}</div>',
+                    unsafe_allow_html=True)
+
+    if st.button("🗑 Clear All", use_container_width=True):
+        st.session_state.extracted = {}
+        st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# RIGHT PANEL — Document Viewer + Canvas
+# ══════════════════════════════════════════════════════════════════════════════
+with right:
+    st.markdown('<div class="panel-label">📄 Document Viewer</div>', unsafe_allow_html=True)
+
+    uploaded = st.file_uploader(
+        "Upload document",
+        type=["pdf", "png", "jpg", "jpeg"],
+        label_visibility="collapsed",
+    )
+
+    if uploaded:
+        file_bytes = uploaded.read()
+        ext = uploaded.name.split(".")[-1].lower()
+
+        if ext == "pdf":
+            with st.spinner("Rendering PDF..."):
+                st.session_state.pages = pdf_to_images(file_bytes)
+        else:
+            st.session_state.pages = [Image.open(io.BytesIO(file_bytes)).convert("RGB")]
+
+        st.session_state.page_idx = min(st.session_state.page_idx, len(st.session_state.pages) - 1)
+
+    if st.session_state.pages:
+        n_pages = len(st.session_state.pages)
 
         # Page navigation
-        def nav_page(pages, idx, delta):
-            if not pages:
-                return idx, None, '<div style="text-align:center;color:#6b6b78;font-size:12px;font-family:monospace;padding:8px">—</div>'
-            new_idx = max(0, min(len(pages) - 1, idx + delta))
-            lbl = f'<div style="text-align:center;color:#6b6b78;font-size:12px;font-family:monospace;padding:8px">Page {new_idx+1} / {len(pages)}</div>'
-            return new_idx, pages[new_idx], lbl
+        if n_pages > 1:
+            st.markdown('<div class="page-nav">', unsafe_allow_html=True)
+            nav_l, nav_info, nav_r = st.columns([1, 2, 1])
+            with nav_l:
+                if st.button("◀ Prev") and st.session_state.page_idx > 0:
+                    st.session_state.page_idx -= 1
+                    st.rerun()
+            with nav_info:
+                st.markdown(f'<div class="page-info" style="text-align:center">Page {st.session_state.page_idx+1} of {n_pages}</div>', unsafe_allow_html=True)
+            with nav_r:
+                if st.button("Next ▶") and st.session_state.page_idx < n_pages - 1:
+                    st.session_state.page_idx += 1
+                    st.rerun()
 
-        prev_btn.click(lambda p, i: nav_page(p, i, -1), [pages_state, page_idx_state],
-                       [page_idx_state, doc_image, page_label])
-        next_btn.click(lambda p, i: nav_page(p, i, +1), [pages_state, page_idx_state],
-                       [page_idx_state, doc_image, page_label])
+        current_page = st.session_state.pages[st.session_state.page_idx]
+        iw, ih = current_page.size
+        canvas_h = int(ih * CANVAS_W / iw)
 
-        # Preset → fields
-        def on_preset_change(preset):
-            fields = PRESETS.get(preset, [])
-            field_text = "\n".join(fields)
-            choices = fields if fields else []
-            val = fields[0] if fields else None
-            return field_text, gr.update(choices=choices, value=val)
+        # Instruction
+        if st.session_state.active_field:
+            st.markdown(f"""
+            <div class="instruction-box">
+                🖱️ Draw a rectangle around the text for <strong>{st.session_state.active_field}</strong>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown("""
+            <div class="instruction-box">
+                👈 Select a field on the left, then draw a box around the matching text in the document.
+            </div>
+            """, unsafe_allow_html=True)
 
-        preset_dd.change(on_preset_change, [preset_dd], [fields_box, active_field_dd])
-
-        # Fields box → update active field dropdown
-        def on_fields_change(text):
-            fields = [f.strip() for f in text.splitlines() if f.strip()]
-            return gr.update(choices=fields, value=fields[0] if fields else None)
-
-        fields_box.change(on_fields_change, [fields_box], [active_field_dd])
-
-        # Auto-extract all fields
-        def on_auto_extract(pages, idx, fields_text, extracted, api_key):
-            if not pages:
-                return extracted, [], '<div class="status-err">❌ Upload a document first.</div>'
-            fields = [f.strip() for f in fields_text.splitlines() if f.strip()]
-            img = pages[idx]
-            try:
-                result = auto_extract_fields(img, fields, api_key)
-                new_extracted = {**extracted, **result}
-                rows = build_fields_df(fields, new_extracted)
-                status = f'<div class="status-ok">✅ Extracted {len(result)} field(s) successfully.</div>'
-                return new_extracted, rows, status
-            except Exception as e:
-                return extracted, build_fields_df(fields, extracted), f'<div class="status-err">❌ {e}</div>'
-
-        extract_btn.click(
-            on_auto_extract,
-            inputs=[pages_state, page_idx_state, fields_box, extracted_state, api_key_input],
-            outputs=[extracted_state, results_df, status_box]
+        # Canvas
+        canvas_result = st_canvas(
+            fill_color="rgba(240, 165, 0, 0.15)",
+            stroke_width=2,
+            stroke_color="#f0a500",
+            background_image=current_page,
+            update_streamlit=True,
+            height=canvas_h,
+            width=CANVAS_W,
+            drawing_mode="rect",
+            key=f"canvas_{st.session_state.page_idx}",
         )
 
-        # Region extract (triggered by hidden button)
-        def on_region_extract(pages, idx, x1, y1, x2, y2, field, fields_text, extracted, boxes, api_key):
-            if not pages or not field:
-                return extracted, [], boxes, pages[idx] if pages else None, \
-                       '<div class="status-err">❌ Select a field and upload a document first.</div>'
-            if abs(x2 - x1) < 5 or abs(y2 - y1) < 5:
-                return extracted, build_fields_df(
-                    [f.strip() for f in fields_text.splitlines() if f.strip()], extracted
-                ), boxes, pages[idx], '<div class="status-err">❌ Selection too small.</div>'
+        # Process drawn rectangle
+        if (
+            canvas_result.json_data
+            and canvas_result.json_data.get("objects")
+            and st.session_state.active_field
+        ):
+            obj = canvas_result.json_data["objects"][-1]
+            if obj.get("width", 0) > 5 and obj.get("height", 0) > 5:
+                if not st.session_state.api_key:
+                    st.error("Enter your Anthropic API Key on the left to extract text.")
+                else:
+                    with st.spinner(f"Extracting '{st.session_state.active_field}'..."):
+                        try:
+                            cropped = crop_region(current_page, obj, CANVAS_W, canvas_h)
+                            text = extract_text_claude(cropped, st.session_state.active_field, st.session_state.api_key)
+                            st.session_state.extracted[st.session_state.active_field] = text
 
-            img = pages[idx]
-            iw, ih = img.size
-            # Gradio image coords are already in pixel space
-            bx1, by1, bx2, by2 = int(min(x1,x2)), int(min(y1,y2)), int(max(x1,x2)), int(max(y1,y2))
-            bx1, by1 = max(0, bx1), max(0, by1)
-            bx2, by2 = min(iw, bx2), min(ih, by2)
-            try:
-                text = extract_region(img, bx1, by1, bx2, by2, field, api_key)
-                new_extracted = {**extracted, field: text}
-                new_boxes = boxes + [{"x1": bx1, "y1": by1, "x2": bx2, "y2": by2}]
-                annotated = annotate_page(img, new_boxes)
-                fields = [f.strip() for f in fields_text.splitlines() if f.strip()]
-                rows = build_fields_df(fields, new_extracted)
-                status = f'<div class="status-ok">✅ {field} → "{text[:60]}{"…" if len(text)>60 else ""}"</div>'
-                return new_extracted, rows, new_boxes, annotated, status
-            except Exception as e:
-                return extracted, build_fields_df(
-                    [f.strip() for f in fields_text.splitlines() if f.strip()], extracted
-                ), boxes, pages[idx], f'<div class="status-err">❌ {e}</div>'
+                            # Move to next field automatically
+                            fields = st.session_state.fields
+                            idx = fields.index(st.session_state.active_field)
+                            if idx + 1 < len(fields):
+                                st.session_state.active_field = fields[idx + 1]
 
-        do_extract_btn.click(
-            on_region_extract,
-            inputs=[pages_state, page_idx_state, sel_x1, sel_y1, sel_x2, sel_y2,
-                    active_field_dd, fields_box, extracted_state, boxes_state, api_key_input],
-            outputs=[extracted_state, results_df, boxes_state, doc_image, status_box]
-        )
+                            st.success(f"✓ Extracted: {text[:60]}{'...' if len(text)>60 else ''}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Extraction error: {e}")
 
-        # Clear
-        def on_clear(fields_text):
-            fields = [f.strip() for f in fields_text.splitlines() if f.strip()]
-            return {}, build_fields_df(fields, {}), [], \
-                   '<div class="status-ok">🗑 Cleared.</div>'
-
-        clear_btn.click(on_clear, [fields_box],
-                        [extracted_state, results_df, boxes_state, status_box])
-
-        # Export JSON
-        def on_export_json(extracted):
-            path = "/tmp/extracted.json"
-            with open(path, "w") as f:
-                json.dump(extracted, f, indent=2)
-            return gr.update(value=path, visible=True)
-
-        export_json_btn.click(on_export_json, [extracted_state], [json_output])
-
-        # Export CSV
-        def on_export_csv(extracted):
-            path = "/tmp/extracted.csv"
-            lines = ["Field,Value"] + [f'"{k}","{v}"' for k, v in extracted.items()]
-            with open(path, "w") as f:
-                f.write("\n".join(lines))
-            return gr.update(value=path, visible=True)
-
-        export_csv_btn.click(on_export_csv, [extracted_state], [csv_output])
-
-        # Inject JS for drag-select on image
-        gr.HTML("""
-        <script>
-        (function() {
-            let startX, startY, dragging = false;
-            let overlay;
-
-            function getDocImg() {
-                // Find the image inside .doc-viewer
-                return document.querySelector('.doc-viewer img');
-            }
-
-            function ensureOverlay(img) {
-                if (overlay && overlay.parentNode) return overlay;
-                overlay = document.createElement('div');
-                overlay.id = 'sel-overlay';
-                overlay.style.cssText = `
-                    position:absolute;border:2px solid #F59E0B;
-                    background:rgba(245,158,11,0.12);pointer-events:none;display:none;
-                `;
-                img.parentElement.style.position = 'relative';
-                img.parentElement.appendChild(overlay);
-                return overlay;
-            }
-
-            function imgCoords(img, clientX, clientY) {
-                const r = img.getBoundingClientRect();
-                const sx = img.naturalWidth  / r.width;
-                const sy = img.naturalHeight / r.height;
-                return {
-                    x: Math.round((clientX - r.left) * sx),
-                    y: Math.round((clientY - r.top)  * sy),
-                    rx: clientX - r.left,
-                    ry: clientY - r.top,
-                };
-            }
-
-            function setHidden(label, val) {
-                const inputs = document.querySelectorAll('input[type=number]');
-                const labels = ['x1','y1','x2','y2'];
-                const idx = labels.indexOf(label);
-                if (idx >= 0 && inputs[idx]) {
-                    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
-                    nativeInputValueSetter.call(inputs[idx], val);
-                    inputs[idx].dispatchEvent(new Event('input', {bubbles:true}));
-                }
-            }
-
-            document.addEventListener('mousedown', function(e) {
-                const img = getDocImg();
-                if (!img || !img.contains(e.target) && e.target !== img) return;
-                const c = imgCoords(img, e.clientX, e.clientY);
-                startX = c.x; startY = c.y;
-                dragging = true;
-                const ov = ensureOverlay(img);
-                const r  = img.getBoundingClientRect();
-                ov.style.left   = (e.clientX - r.left) + 'px';
-                ov.style.top    = (e.clientY - r.top)  + 'px';
-                ov.style.width  = '0px';
-                ov.style.height = '0px';
-                ov.style.display = 'block';
-                e.preventDefault();
-            });
-
-            document.addEventListener('mousemove', function(e) {
-                if (!dragging) return;
-                const img = getDocImg();
-                if (!img) return;
-                const r = img.getBoundingClientRect();
-                const ov = ensureOverlay(img);
-                const cx = e.clientX - r.left, cy = e.clientY - r.top;
-                const ox = Math.min(startX * r.width / img.naturalWidth, cx);
-                const oy = Math.min(startY * r.height / img.naturalHeight, cy);
-                const ow = Math.abs(cx - startX * r.width / img.naturalWidth);
-                const oh = Math.abs(cy - startY * r.height / img.naturalHeight);
-                ov.style.left   = ox + 'px';
-                ov.style.top    = oy + 'px';
-                ov.style.width  = ow + 'px';
-                ov.style.height = oh + 'px';
-            });
-
-            document.addEventListener('mouseup', function(e) {
-                if (!dragging) return;
-                dragging = false;
-                const img = getDocImg();
-                if (!img) return;
-                const c = imgCoords(img, e.clientX, e.clientY);
-                setHidden('x1', Math.min(startX, c.x));
-                setHidden('y1', Math.min(startY, c.y));
-                setHidden('x2', Math.max(startX, c.x));
-                setHidden('y2', Math.max(startY, c.y));
-                // Click the hidden extract button
-                setTimeout(() => {
-                    const btns = document.querySelectorAll('button');
-                    for (const b of btns) {
-                        if (b.textContent.trim() === 'Extract Region') { b.click(); break; }
-                    }
-                }, 80);
-                if (overlay) overlay.style.display = 'none';
-            });
-        })();
-        </script>
-        """)
-
-    return demo
-
-
-# ── Entry point ───────────────────────────────────────────────────────────────
-# Build at module level so HF Spaces can find the `demo` object directly
-demo = build_ui()
-
-if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    else:
+        st.markdown("""
+        <div class="upload-zone">
+            <div style="font-size:48px;margin-bottom:16px">📄</div>
+            <div style="color:#555;font-size:15px">Upload a PDF or image to get started</div>
+            <div style="color:#3a3a3e;font-size:13px;margin-top:8px">Supports PDF, JPG, PNG</div>
+        </div>
+        """, unsafe_allow_html=True)

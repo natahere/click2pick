@@ -1,4 +1,4 @@
 anthropic
 pymupdf
 Pillow
-gradio==5.9.1
+streamlit-drawable-canvas
