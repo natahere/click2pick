@@ -1,3 +1,4 @@
-anthropic
 pymupdf
 Pillow
+pytesseract
+easyocr
