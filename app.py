@@ -219,13 +219,10 @@ with left:
 
     for field in st.session_state.fields:
         val    = st.session_state.extracted.get(field, "")
-        border = "#F59E0B" if field == st.session_state.active_field else "#26262d"
-        arrow  = "→ " if field == st.session_state.active_field else ""
-        st.markdown(f"""<div class="field-row" style="border-color:{border}">
-          <div class="field-name">{arrow}{field}</div>
-          <div class="field-val {'field-empty' if not val else ''}">{val or 'not extracted yet'}</div>
-        </div>""", unsafe_allow_html=True)
-        new_val = st.text_input("_", value=val, label_visibility="collapsed", key=f"inp_{field}")
+        is_active = field == st.session_state.active_field
+        label_md = f"**→ {field}**" if is_active else field
+        new_val = st.text_input(label_md, value=val, key=f"inp_{field}",
+                                placeholder="not extracted yet")
         if new_val != val:
             st.session_state.extracted[field] = new_val
             st.rerun()
@@ -434,7 +431,6 @@ with right:
                                 idx = fields.index(st.session_state.active_field)
                                 if idx + 1 < len(fields):
                                     st.session_state.active_field = fields[idx + 1]
-                            clear_selection()
                             st.rerun()
                 except Exception as e:
                     st.error(f"OCR error: {e}")
