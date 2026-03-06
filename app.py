@@ -1,10 +1,8 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import json, io, os, re, tempfile, base64
 import fitz
 from PIL import Image, ImageDraw, ImageFilter, ImageEnhance
 import pytesseract
-from pathlib import Path
 
 st.set_page_config(page_title="DocExtract", page_icon="🔍", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -32,120 +30,6 @@ hr{border-color:#1e1e22!important}
 </style>
 """, unsafe_allow_html=True)
 
-# ── Build the custom component HTML and register it ───────────────────────────
-# We write the component to a temp dir at runtime so it works on any host
-# without needing a committed subfolder in git.
-
-COMPONENT_HTML = """<!DOCTYPE html>
-<html>
-<head>
-<style>
-  * { margin:0; padding:0; box-sizing:border-box; }
-  body { background:#0c0c0f; overflow:hidden; user-select:none; }
-  #canvas { cursor:crosshair; display:block; }
-  #status {
-    font-family: monospace; font-size:11px; color:#6b6b78;
-    padding:5px 8px; background:#141417; border-top:1px solid #26262d;
-  }
-</style>
-</head>
-<body>
-<canvas id="canvas"></canvas>
-<div id="status">🖱 Click and drag on the document to select a region</div>
-<script src="https://unpkg.com/streamlit-component-lib@2.0.0/dist/index.js"></script>
-<script>
-(function() {
-  const canvas = document.getElementById('canvas');
-  const ctx    = canvas.getContext('2d');
-  const status = document.getElementById('status');
-  let imgEl = null, boxes = [], sx=0, sy=0, dragging=false;
-  let scaleX=1, scaleY=1;
-
-  function drawAll(rx, ry, rw, rh) {
-    ctx.clearRect(0,0,canvas.width,canvas.height);
-    if (imgEl) ctx.drawImage(imgEl, 0, 0, canvas.width, canvas.height);
-    // completed boxes
-    boxes.forEach(b => {
-      ctx.fillStyle='rgba(52,211,153,0.15)';
-      ctx.fillRect(b.x1,b.y1,b.x2-b.x1,b.y2-b.y1);
-      ctx.strokeStyle='#34d399'; ctx.lineWidth=2;
-      ctx.strokeRect(b.x1,b.y1,b.x2-b.x1,b.y2-b.y1);
-    });
-    // current drag rect
-    if (rw > 0 && rh > 0) {
-      ctx.fillStyle='rgba(245,158,11,0.2)';
-      ctx.fillRect(rx,ry,rw,rh);
-      ctx.strokeStyle='#F59E0B'; ctx.lineWidth=2;
-      ctx.setLineDash([6,3]); ctx.strokeRect(rx,ry,rw,rh); ctx.setLineDash([]);
-    }
-  }
-
-  function onRender(event) {
-    const data = event.detail;
-    if (!data || !data.img_b64) return;
-    boxes   = data.boxes || [];
-    scaleX  = data.orig_w / data.width;
-    scaleY  = data.orig_h / data.height;
-    canvas.width  = data.width;
-    canvas.height = data.height;
-    imgEl = new Image();
-    imgEl.onload = () => { drawAll(0,0,0,0); Streamlit.setFrameHeight(canvas.height + 26); };
-    imgEl.src = 'data:image/jpeg;base64,' + data.img_b64;
-  }
-
-  canvas.addEventListener('mousedown', e => {
-    const r = canvas.getBoundingClientRect();
-    sx = e.clientX-r.left; sy = e.clientY-r.top;
-    dragging = true; e.preventDefault();
-  });
-  canvas.addEventListener('mousemove', e => {
-    if (!dragging) return;
-    const r=canvas.getBoundingClientRect(), ex=e.clientX-r.left, ey=e.clientY-r.top;
-    drawAll(Math.min(sx,ex),Math.min(sy,ey),Math.abs(ex-sx),Math.abs(ey-sy));
-  });
-  canvas.addEventListener('mouseup', e => {
-    if (!dragging) return; dragging=false;
-    const r=canvas.getBoundingClientRect(), ex=e.clientX-r.left, ey=e.clientY-r.top;
-    const x1=Math.round(Math.min(sx,ex)*scaleX), y1=Math.round(Math.min(sy,ey)*scaleY);
-    const x2=Math.round(Math.max(sx,ex)*scaleX), y2=Math.round(Math.max(sy,ey)*scaleY);
-    drawAll(Math.min(sx,ex),Math.min(sy,ey),Math.abs(ex-sx),Math.abs(ey-sy));
-    if (Math.abs(x2-x1)>5 && Math.abs(y2-y1)>5) {
-      status.textContent = '✓ Selected (' + (x2-x1) + '×' + (y2-y1) + 'px) — click Extract';
-      Streamlit.setComponentValue({x1,y1,x2,y2});
-    } else {
-      status.textContent = '⚠ Too small — try dragging a larger area';
-    }
-  });
-
-  // Touch
-  canvas.addEventListener('touchstart', e=>{ const r=canvas.getBoundingClientRect(),t=e.touches[0]; sx=t.clientX-r.left; sy=t.clientY-r.top; dragging=true; e.preventDefault(); },{passive:false});
-  canvas.addEventListener('touchmove',  e=>{ if(!dragging)return; const r=canvas.getBoundingClientRect(),t=e.touches[0],ex=t.clientX-r.left,ey=t.clientY-r.top; drawAll(Math.min(sx,ex),Math.min(sy,ey),Math.abs(ex-sx),Math.abs(ey-sy)); e.preventDefault(); },{passive:false});
-  canvas.addEventListener('touchend',   e=>{ if(!dragging)return; dragging=false; const r=canvas.getBoundingClientRect(),t=e.changedTouches[0],ex=t.clientX-r.left,ey=t.clientY-r.top; const x1=Math.round(Math.min(sx,ex)*scaleX),y1=Math.round(Math.min(sy,ey)*scaleY),x2=Math.round(Math.max(sx,ex)*scaleX),y2=Math.round(Math.max(sy,ey)*scaleY); if(Math.abs(x2-x1)>5&&Math.abs(y2-y1)>5){Streamlit.setComponentValue({x1,y1,x2,y2});} });
-
-  Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, onRender);
-  Streamlit.setComponentReady();
-})();
-</script>
-</body>
-</html>"""
-
-@st.cache_resource
-def get_component():
-    """Write component HTML to a temp dir and declare it. Cached so it runs once."""
-    tmp = tempfile.mkdtemp(prefix="docextract_comp_")
-    with open(os.path.join(tmp, "index.html"), "w") as f:
-        f.write(COMPONENT_HTML)
-    return components.declare_component("drag_selector", path=tmp)
-
-drag_selector = get_component()
-
-def image_drag_selector(img_b64, orig_w, orig_h, disp_w, disp_h, boxes, key):
-    return drag_selector(
-        img_b64=img_b64, orig_w=orig_w, orig_h=orig_h,
-        width=disp_w, height=disp_h, boxes=boxes,
-        key=key, default=None,
-    )
-
 # ── OCR ───────────────────────────────────────────────────────────────────────
 def preprocess(img):
     gray = img.convert("L")
@@ -153,8 +37,8 @@ def preprocess(img):
     gray = gray.filter(ImageFilter.SHARPEN)
     w, h = gray.size
     if w < 400:
-        scale = 400 / w
-        gray  = gray.resize((int(w*scale), int(h*scale)), Image.LANCZOS)
+        s = 400 / w
+        gray = gray.resize((int(w*s), int(h*s)), Image.LANCZOS)
     return gray
 
 def run_ocr(img):
@@ -172,8 +56,8 @@ def pdf_to_pages(path):
         texts.append(page.get_text())
     return pages, texts
 
-def smart_match(full_text, field):
-    lines = [l.strip() for l in full_text.splitlines() if l.strip()]
+def smart_match(text, field):
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
     fkey  = re.sub(r'\s+', '', field.lower())
     for i, line in enumerate(lines):
         if fkey in re.sub(r'\s+', '', line.lower()):
@@ -209,10 +93,13 @@ def pil_to_b64(img, quality=88):
     img.save(buf, format="JPEG", quality=quality)
     return base64.standard_b64encode(buf.getvalue()).decode()
 
-def scale_boxes(boxes, iw, ih, dw, dh):
-    sx, sy = dw/iw, dh/ih
-    return [{"x1":int(b["x1"]*sx),"y1":int(b["y1"]*sy),
-             "x2":int(b["x2"]*sx),"y2":int(b["y2"]*sy)} for b in boxes]
+def annotate(img, boxes):
+    out  = img.copy()
+    draw = ImageDraw.Draw(out, "RGBA")
+    for b in boxes:
+        draw.rectangle([b["x1"],b["y1"],b["x2"],b["y2"]],
+                       outline="#34d399", width=2, fill=(52,211,153,30))
+    return out
 
 PRESETS = {
     "📄 Invoice":       ["Vendor Name","Invoice Number","Invoice Date","Due Date",
@@ -231,17 +118,34 @@ DISP_W = 680
 
 DEFAULTS = dict(pages=[], pdf_texts=[], extracted={}, boxes=[],
                 page_idx=0, active_field=None,
-                fields=list(PRESETS["📄 Invoice"]), selection=None)
+                fields=list(PRESETS["📄 Invoice"]),
+                sel=None)            # sel = {x1,y1,x2,y2} in original image coords
 for k, v in DEFAULTS.items():
     if k not in st.session_state:
         st.session_state[k] = v
+
+# ── Read selection posted via query params ────────────────────────────────────
+# The canvas iframe cannot postMessage to parent (CSP blocked).
+# Instead it submits a tiny HTML form whose action is the current page URL
+# with ?sel=x1,y1,x2,y2 appended. The browser navigates the TOP frame,
+# Streamlit picks up the query param, stores it, clears it, reruns cleanly.
+params = st.query_params
+if "sel" in params:
+    try:
+        parts = [int(v) for v in params["sel"].split(",")]
+        if len(parts) == 4:
+            st.session_state.sel = {"x1":parts[0],"y1":parts[1],
+                                     "x2":parts[2],"y2":parts[3]}
+    except Exception:
+        pass
+    st.query_params.clear()
 
 # ── Header ────────────────────────────────────────────────────────────────────
 st.markdown("""
 <div style="padding:20px 0 14px;border-bottom:1px solid #26262d;margin-bottom:20px">
   <div class="app-title">Doc<span>Extract</span></div>
   <div style="font-size:12px;color:#6b6b78;margin-top:3px">
-    Upload · Drag to select · Click Extract · Value populates field</div>
+    Upload · Drag on the image to select · Click Extract</div>
 </div>""", unsafe_allow_html=True)
 
 left, right = st.columns([1, 1.9], gap="large")
@@ -310,7 +214,7 @@ with left:
     if st.button("🗑 Clear All", use_container_width=True):
         st.session_state.extracted = {}
         st.session_state.boxes     = []
-        st.session_state.selection = None
+        st.session_state.sel       = None
         st.rerun()
 
 # ══════════════ RIGHT ═════════════════════════════════════════════════════════
@@ -333,9 +237,9 @@ with right:
         else:
             st.session_state.pages     = [Image.open(io.BytesIO(data)).convert("RGB")]
             st.session_state.pdf_texts = []
-        st.session_state.page_idx  = 0
-        st.session_state.boxes     = []
-        st.session_state.selection = None
+        st.session_state.page_idx = 0
+        st.session_state.boxes    = []
+        st.session_state.sel      = None
 
     if not st.session_state.pages:
         st.markdown("""<div style="border:2px dashed #26262d;border-radius:12px;
@@ -351,8 +255,8 @@ with right:
         with c1:
             if st.button("◀ Prev") and st.session_state.page_idx > 0:
                 st.session_state.page_idx -= 1
-                st.session_state.boxes    = []
-                st.session_state.selection = None
+                st.session_state.boxes = []
+                st.session_state.sel   = None
                 st.rerun()
         with c2:
             st.markdown(f'<div style="text-align:center;color:#6b6b78;font-size:12px;'
@@ -362,71 +266,170 @@ with right:
         with c3:
             if st.button("Next ▶") and st.session_state.page_idx < n-1:
                 st.session_state.page_idx += 1
-                st.session_state.boxes    = []
-                st.session_state.selection = None
+                st.session_state.boxes = []
+                st.session_state.sel   = None
                 st.rerun()
 
     page_img = st.session_state.pages[st.session_state.page_idx]
     iw, ih   = page_img.size
     disp_h   = int(ih * DISP_W / iw)
+    scaleX   = iw / DISP_W
+    scaleY   = ih / disp_h
 
     # Instruction
+    sel = st.session_state.sel
     if not st.session_state.active_field:
         st.markdown('<div class="infobox">👈 Select a <strong>Target Field</strong> on the left first.</div>',
                     unsafe_allow_html=True)
-    elif st.session_state.selection is None:
+    elif sel is None:
         st.markdown(f'<div class="infobox">🖱 <strong>Click and drag</strong> on the document '
                     f'to select the region for '
                     f'<strong>{st.session_state.active_field}</strong></div>',
                     unsafe_allow_html=True)
     else:
-        sel = st.session_state.selection
-        st.markdown(f'<div class="infobox">✅ Region selected '
-                    f'({sel["x2"]-sel["x1"]}×{sel["y2"]-sel["y1"]}px) — '
+        st.markdown(f'<div class="infobox">✅ Region selected — '
                     f'click <strong>Extract</strong> below, or drag again to re-select.</div>',
                     unsafe_allow_html=True)
 
-    # Render component
-    disp_boxes = scale_boxes(st.session_state.boxes, iw, ih, DISP_W, disp_h)
-    b64 = pil_to_b64(page_img.resize((DISP_W, disp_h), Image.LANCZOS))
+    # ── Canvas rendered via components.html ───────────────────────────────────
+    # Boxes in display coords for drawing
+    disp_boxes = [{"x1":int(b["x1"]/scaleX),"y1":int(b["y1"]/scaleY),
+                   "x2":int(b["x2"]/scaleX),"y2":int(b["y2"]/scaleY)}
+                  for b in st.session_state.boxes]
 
-    result = image_drag_selector(
-        img_b64=b64, orig_w=iw, orig_h=ih,
-        disp_w=DISP_W, disp_h=disp_h,
-        boxes=disp_boxes,
-        key=f"drag_{st.session_state.page_idx}",
-    )
+    # Render current selection on the image itself (no JS needed for this part)
+    display_img = annotate(page_img, st.session_state.boxes)
+    if sel:
+        draw = ImageDraw.Draw(display_img, "RGBA")
+        draw.rectangle([sel["x1"],sel["y1"],sel["x2"],sel["y2"]],
+                       outline="#F59E0B", width=3, fill=(245,158,11,40))
+    b64 = pil_to_b64(display_img.resize((DISP_W, disp_h), Image.LANCZOS))
 
-    # Store new selection (component returns display coords; scale back to original)
-    if result is not None:
-        sx = iw / DISP_W
-        sy = ih / disp_h
-        st.session_state.selection = {
-            "x1": int(result["x1"] * sx), "y1": int(result["y1"] * sy),
-            "x2": int(result["x2"] * sx), "y2": int(result["y2"] * sy),
-        }
+    # The current page URL (without query params) — used as the form action
+    # We encode selection as ?sel=x1,y1,x2,y2 which Streamlit reads above
+    canvas_html = f"""
+<!DOCTYPE html><html><head>
+<style>
+  *{{margin:0;padding:0;box-sizing:border-box}}
+  body{{background:#0c0c0f;overflow:hidden;user-select:none}}
+  canvas{{display:block;cursor:crosshair}}
+  #msg{{font-family:monospace;font-size:11px;color:#6b6b78;
+        padding:5px 8px;background:#141417;border-top:1px solid #26262d}}
+  form{{display:none}}
+</style></head><body>
+<canvas id="c" width="{DISP_W}" height="{disp_h}"></canvas>
+<div id="msg">🖱 Click and drag to select a region, then click Extract below</div>
+<form id="f" method="GET">
+  <input type="hidden" id="sel_input" name="sel" value="">
+</form>
+<script>
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+const msg    = document.getElementById('msg');
+const form   = document.getElementById('f');
+const selInp = document.getElementById('sel_input');
 
-    # Crop preview + Extract button
-    sel = st.session_state.selection
-    if sel and sel["x2"] - sel["x1"] > 8 and sel["y2"] - sel["y1"] > 8:
+const SX = {scaleX};  // display → original
+const SY = {scaleY};
+
+let sx=0, sy=0, dragging=false;
+
+// Load image
+const img = new Image();
+img.onload = () => ctx.drawImage(img, 0, 0, {DISP_W}, {disp_h});
+img.src = 'data:image/jpeg;base64,{b64}';
+
+function redraw(rx, ry, rw, rh) {{
+  ctx.clearRect(0,0,{DISP_W},{disp_h});
+  ctx.drawImage(img, 0, 0, {DISP_W}, {disp_h});
+  if (rw>0 && rh>0) {{
+    ctx.fillStyle = 'rgba(245,158,11,0.2)';
+    ctx.fillRect(rx, ry, rw, rh);
+    ctx.strokeStyle = '#F59E0B';
+    ctx.lineWidth   = 2;
+    ctx.setLineDash([6,3]);
+    ctx.strokeRect(rx, ry, rw, rh);
+    ctx.setLineDash([]);
+  }}
+}}
+
+function getPos(e) {{
+  const r = canvas.getBoundingClientRect();
+  const s = e.touches ? e.touches[0] : e;
+  return [s.clientX - r.left, s.clientY - r.top];
+}}
+
+function finish(ex, ey) {{
+  dragging = false;
+  const x1 = Math.round(Math.min(sx,ex) * SX);
+  const y1 = Math.round(Math.min(sy,ey) * SY);
+  const x2 = Math.round(Math.max(sx,ex) * SX);
+  const y2 = Math.round(Math.max(sy,ey) * SY);
+  redraw(Math.min(sx,ex), Math.min(sy,ey), Math.abs(ex-sx), Math.abs(ey-sy));
+  if (Math.abs(x2-x1) > 5 && Math.abs(y2-y1) > 5) {{
+    msg.textContent = '✓ Region selected — click Extract below';
+    // Submit form to parent page URL with ?sel= param
+    // This navigates the TOP frame, which Streamlit intercepts
+    selInp.value = x1+','+y1+','+x2+','+y2;
+    form.action  = window.parent.location.href.split('?')[0];
+    form.target  = '_parent';
+    form.submit();
+  }} else {{
+    msg.textContent = '⚠ Selection too small — try again';
+  }}
+}}
+
+canvas.addEventListener('mousedown', e => {{
+  [sx,sy] = getPos(e); dragging=true; e.preventDefault();
+}});
+canvas.addEventListener('mousemove', e => {{
+  if (!dragging) return;
+  const [ex,ey] = getPos(e);
+  redraw(Math.min(sx,ex),Math.min(sy,ey),Math.abs(ex-sx),Math.abs(ey-sy));
+}});
+canvas.addEventListener('mouseup', e => {{
+  if (!dragging) return;
+  const [ex,ey] = getPos(e); finish(ex,ey);
+}});
+canvas.addEventListener('touchstart', e=>{{
+  [sx,sy]=getPos(e); dragging=true; e.preventDefault();
+}},{{passive:false}});
+canvas.addEventListener('touchmove', e=>{{
+  if(!dragging)return;
+  const [ex,ey]=getPos(e);
+  redraw(Math.min(sx,ex),Math.min(sy,ey),Math.abs(ex-sx),Math.abs(ey-sy));
+  e.preventDefault();
+}},{{passive:false}});
+canvas.addEventListener('touchend', e=>{{
+  if(!dragging)return;
+  const [ex,ey]=getPos({{touches:e.changedTouches}}); finish(ex,ey);
+}});
+</script>
+</body></html>"""
+
+    import streamlit.components.v1 as components
+    components.html(canvas_html, height=disp_h + 30, scrolling=False)
+
+    # ── Crop preview + Extract ─────────────────────────────────────────────────
+    if sel and sel["x2"]-sel["x1"] > 8 and sel["y2"]-sel["y1"] > 8:
         pad  = 6
         crop = page_img.crop((max(0, sel["x1"]-pad), max(0, sel["y1"]-pad),
                                min(iw, sel["x2"]+pad), min(ih, sel["y2"]+pad)))
 
-        st.markdown('<div class="panel-label" style="margin-top:12px">🔎 Crop Preview</div>',
+        st.markdown('<div class="panel-label" style="margin-top:10px">🔎 Crop Preview</div>',
                     unsafe_allow_html=True)
         st.image(crop, width=min(crop.width * 2, DISP_W))
 
         btn_col, reset_col = st.columns([3, 1])
         with btn_col:
-            btn_label = (f"🔍 Extract → \"{st.session_state.active_field}\""
-                         if st.session_state.active_field else "🔍 Extract Text")
-            if st.button(btn_label, use_container_width=True, type="primary"):
+            lbl = (f"🔍 Extract → \"{st.session_state.active_field}\""
+                   if st.session_state.active_field else "🔍 Extract Text")
+            if st.button(lbl, use_container_width=True, type="primary"):
                 with st.spinner("Running OCR…"):
                     try:
                         text = run_ocr(crop)
                         if not text:
-                            st.warning("No text detected — try selecting a wider region.")
+                            st.warning("No text detected — try a wider selection.")
                         else:
                             if st.session_state.active_field:
                                 field = st.session_state.active_field
@@ -435,13 +438,12 @@ with right:
                                     "x1":sel["x1"],"y1":sel["y1"],
                                     "x2":sel["x2"],"y2":sel["y2"],
                                 })
-                                # Advance to next field
                                 fields = st.session_state.fields
                                 if field in fields:
                                     idx = fields.index(field)
-                                    if idx + 1 < len(fields):
+                                    if idx+1 < len(fields):
                                         st.session_state.active_field = fields[idx+1]
-                                st.session_state.selection = None
+                                st.session_state.sel = None
                                 st.rerun()
                             else:
                                 st.success(f"✅ `{text}`")
@@ -449,5 +451,5 @@ with right:
                         st.error(f"OCR error: {e}")
         with reset_col:
             if st.button("↺ Reset", use_container_width=True):
-                st.session_state.selection = None
+                st.session_state.sel = None
                 st.rerun()
