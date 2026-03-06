@@ -146,7 +146,7 @@ PRESETS = {
 # ── Session state ─────────────────────────────────────────────────────────────
 for k, v in [("pages",[]),("pdf_texts",[]),("extracted",{}),("boxes",[]),
               ("page_idx",0),("active_field",None),("fields",list(PRESETS["📄 Invoice"])),
-              ("pending_crop",None)]:
+              ("pending_crop",None),("sel_x1",0),("sel_y1",0),("sel_x2",0),("sel_y2",0)]:
     if k not in st.session_state:
         st.session_state[k] = v
 
@@ -261,6 +261,8 @@ with right:
         st.session_state.page_idx = 0
         st.session_state.boxes = []
         st.session_state.pending_crop = None
+        st.session_state.sel_x1 = st.session_state.sel_y1 = 0
+        st.session_state.sel_x2 = st.session_state.sel_y2 = 0
 
     if not st.session_state.pages:
         st.markdown("""<div style="border:2px dashed #26262d;border-radius:12px;padding:60px;text-align:center">
@@ -278,6 +280,8 @@ with right:
                 st.session_state.page_idx -= 1
                 st.session_state.boxes = []
                 st.session_state.pending_crop = None
+                st.session_state.sel_x1 = st.session_state.sel_y1 = 0
+                st.session_state.sel_x2 = st.session_state.sel_y2 = 0
                 st.rerun()
         with c2:
             st.markdown(f'<div style="text-align:center;color:#6b6b78;font-size:12px;font-family:monospace;padding:8px">'
@@ -287,6 +291,8 @@ with right:
                 st.session_state.page_idx += 1
                 st.session_state.boxes = []
                 st.session_state.pending_crop = None
+                st.session_state.sel_x1 = st.session_state.sel_y1 = 0
+                st.session_state.sel_x2 = st.session_state.sel_y2 = 0
                 st.rerun()
 
     page_img = st.session_state.pages[st.session_state.page_idx]
@@ -393,10 +399,15 @@ with right:
     st.markdown('<div class="panel-label" style="margin-top:12px">📐 Selection Coordinates</div>',
                 unsafe_allow_html=True)
     cc1, cc2, cc3, cc4 = st.columns(4)
-    with cc1: x1 = st.number_input("x1", min_value=0, max_value=iw, value=0, step=1)
-    with cc2: y1 = st.number_input("y1", min_value=0, max_value=ih, value=0, step=1)
-    with cc3: x2 = st.number_input("x2", min_value=0, max_value=iw, value=0, step=1)
-    with cc4: y2 = st.number_input("y2", min_value=0, max_value=ih, value=0, step=1)
+    with cc1: x1 = st.number_input("x1", min_value=0, max_value=iw, value=st.session_state.sel_x1, step=1, key="ni_x1")
+    with cc2: y1 = st.number_input("y1", min_value=0, max_value=ih, value=st.session_state.sel_y1, step=1, key="ni_y1")
+    with cc3: x2 = st.number_input("x2", min_value=0, max_value=iw, value=st.session_state.sel_x2, step=1, key="ni_x2")
+    with cc4: y2 = st.number_input("y2", min_value=0, max_value=ih, value=st.session_state.sel_y2, step=1, key="ni_y2")
+    # Persist coords in session state so button survives reruns
+    st.session_state.sel_x1 = x1
+    st.session_state.sel_y1 = y1
+    st.session_state.sel_x2 = x2
+    st.session_state.sel_y2 = y2
 
     # Show crop preview when valid selection exists
     has_selection = (x2 > x1 + 8) and (y2 > y1 + 8)
@@ -431,6 +442,8 @@ with right:
                                 idx = fields.index(st.session_state.active_field)
                                 if idx + 1 < len(fields):
                                     st.session_state.active_field = fields[idx+1]
+                            st.session_state.sel_x1 = st.session_state.sel_y1 = 0
+                            st.session_state.sel_x2 = st.session_state.sel_y2 = 0
                             st.rerun()
                 except Exception as e:
                     st.error(f"OCR error: {e}")
