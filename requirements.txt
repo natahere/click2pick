@@ -1,0 +1,4 @@
+gradio==4.44.1
+anthropic==0.40.0
+pymupdf==1.24.14
+Pillow==11.0.0
